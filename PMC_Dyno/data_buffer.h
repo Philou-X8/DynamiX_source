@@ -8,12 +8,13 @@
 // It is deliberately NOT relied upon for the wire format (no #pragma pack,
 // no assumptions about sizeof(Point) == 10) because natural alignment of
 // the uint32_t member would pad this to 12 bytes on most compilers. The
-// exact 10-byte wire representation (3B position + 3B force + 4B time) is
+// exact 10-byte big-endian wire representation (3B position + 3B force +
+// 4B time) is
 // produced explicitly by protocol.cpp's serialization code instead. See
 // design doc section 4/5.
 struct Point {
-    int32_t position;   // 24-bit ADC reading, sign-extended
-    int32_t force;       // 24-bit ADC reading, sign-extended
+    uint32_t position;   // 24-bit ADC reading, unsigned (0..0xFFFFFF)
+    uint32_t force;      // 24-bit ADC reading, unsigned (0..0xFFFFFF)
     uint32_t time_ms;    // ms since current test/run started
 };
 

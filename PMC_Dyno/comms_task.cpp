@@ -29,9 +29,9 @@ void CommsTask::begin(DoubleBuffer* dataBuffer, StateMachine* stateMachine, uint
     instructionQueueHandle_ = xQueueCreate(INSTRUCTION_QUEUE_DEPTH, sizeof(Instruction));
 }
 
-bool CommsTask::enqueuePriorityMessage(const uint8_t* payload, size_t payloadSize) {
+bool CommsTask::enqueuePriorityMessage(uint8_t flag, const uint8_t* payload, size_t payloadSize) {
     uint8_t frame[MAX_FRAME_SIZE];
-    size_t frameLen = encodeInstructionFrame(payload, payloadSize, frame, sizeof(frame));
+    size_t frameLen = encodeCommandFrame(flag, payload, payloadSize, frame, sizeof(frame));
     if (frameLen == 0) {
         return false;
     }
@@ -86,11 +86,11 @@ void CommsTask::recvTaskFn(void* pvParameters) {
             uint8_t b = (uint8_t)Serial.read();
             if (decoder.feed(b, frame)) {
                 if (frame.type == FrameType::Instruction) {
+                    // Body is [flag][payload...]; decoder guarantees size >= 1.
                     Instruction instr;
-                    instr.size = frame.payloadSize < sizeof(instr.raw)
-                                     ? frame.payloadSize
-                                     : sizeof(instr.raw);
-                    memcpy(instr.raw, frame.payload, instr.size);
+                    instr.flag = frame.payload[0];
+                    instr.payloadSize = frame.payloadSize - 1;
+                    memcpy(instr.payload, frame.payload + 1, instr.payloadSize);
                     // Handed off to the main loop via queue rather than
                     // calling stateMachine_ directly from this task, so
                     // all state transitions stay owned by one thread.

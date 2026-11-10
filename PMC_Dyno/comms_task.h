@@ -21,10 +21,11 @@ class CommsTask {
 public:
     void begin(DoubleBuffer* dataBuffer, StateMachine* stateMachine, uint32_t baudRate);
 
-    // Enqueue a pre-built instruction-type payload (ack/error/heartbeat)
-    // for the send task to prioritize ahead of the next data chunk.
-    // Returns false if the priority queue is full.
-    bool enqueuePriorityMessage(const uint8_t* payload, size_t payloadSize);
+    // Enqueue a command (ack/error/heartbeat) for the send task to
+    // prioritize ahead of the next data chunk. 'payload' may be null when
+    // payloadSize is 0. Returns false if the frame can't be built or the
+    // priority queue is full.
+    bool enqueuePriorityMessage(uint8_t flag, const uint8_t* payload, size_t payloadSize);
 
     // Called from the main loop (not the recv task) so all state
     // transitions stay owned by a single thread. Returns true and fills

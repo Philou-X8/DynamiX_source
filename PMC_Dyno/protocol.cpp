@@ -2,45 +2,41 @@
 #include <string.h>
 
 // --- Point serialization -----------------------------------------------
-// Wire layout per point (10 bytes), little-endian:
-//   [0..2]  position, low 24 bits of the int32_t, two's complement
-//   [3..5]  force,    low 24 bits of the int32_t, two's complement
-//   [6..9]  time_ms, full 32 bits
+// Wire layout per point (10 bytes), big-endian (most significant byte
+// first), all fields unsigned:
+//   [0..2]  position, 24 bits
+//   [3..5]  force,    24 bits
+//   [6..9]  time_ms,  32 bits
 //
-// NOTE: pick an endianness and keep the PC-side decoder consistent with
-// it. Little-endian chosen here since it matches the ESP32's native byte
-// order (no swapping needed on the firmware side).
+// Must stay in sync with SerialDecoder.DecodeMessage() on the PC side.
 
-static void writePointBytes(const Point& p, uint8_t* out) {
-    out[0] = (uint8_t)(p.position & 0xFF);
-    out[1] = (uint8_t)((p.position >> 8) & 0xFF);
-    out[2] = (uint8_t)((p.position >> 16) & 0xFF);
-
-    out[3] = (uint8_t)(p.force & 0xFF);
-    out[4] = (uint8_t)((p.force >> 8) & 0xFF);
-    out[5] = (uint8_t)((p.force >> 16) & 0xFF);
-
-    out[6] = (uint8_t)(p.time_ms & 0xFF);
-    out[7] = (uint8_t)((p.time_ms >> 8) & 0xFF);
-    out[8] = (uint8_t)((p.time_ms >> 16) & 0xFF);
-    out[9] = (uint8_t)((p.time_ms >> 24) & 0xFF);
+static void writeUint24(uint32_t v, uint8_t* out) {
+    out[0] = (uint8_t)((v >> 16) & 0xFF);
+    out[1] = (uint8_t)((v >> 8) & 0xFF);
+    out[2] = (uint8_t)(v & 0xFF);
 }
 
-// Sign-extend a 24-bit two's complement value read from the wire into a
-// 32-bit int.
-static int32_t readInt24(const uint8_t* b) {
-    int32_t v = (int32_t)b[0] | ((int32_t)b[1] << 8) | ((int32_t)b[2] << 16);
-    if (v & 0x00800000) {
-        v |= 0xFF000000; // sign-extend
-    }
-    return v;
+static uint32_t readUint24(const uint8_t* b) {
+    return ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[2];
+}
+
+static void writePointBytes(const Point& p, uint8_t* out) {
+    // writeUint24 keeps only the low 24 bits, so an out-of-range value
+    // can't leak into the neighbouring field.
+    writeUint24(p.position, out);
+    writeUint24(p.force, out + 3);
+
+    out[6] = (uint8_t)((p.time_ms >> 24) & 0xFF);
+    out[7] = (uint8_t)((p.time_ms >> 16) & 0xFF);
+    out[8] = (uint8_t)((p.time_ms >> 8) & 0xFF);
+    out[9] = (uint8_t)(p.time_ms & 0xFF);
 }
 
 static void readPointBytes(const uint8_t* in, Point& p) {
-    p.position = readInt24(in);
-    p.force = readInt24(in + 3);
-    p.time_ms = (uint32_t)in[6] | ((uint32_t)in[7] << 8) |
-                ((uint32_t)in[8] << 16) | ((uint32_t)in[9] << 24);
+    p.position = readUint24(in);
+    p.force = readUint24(in + 3);
+    p.time_ms = ((uint32_t)in[6] << 24) | ((uint32_t)in[7] << 16) |
+                ((uint32_t)in[8] << 8) | (uint32_t)in[9];
 }
 
 // --- Encoding ------------------------------------------------------------
@@ -85,6 +81,30 @@ size_t encodeInstructionFrame(const uint8_t* payload, size_t payloadSize,
 
     if (payloadSize > 0) {
         memcpy(outBuf + HEADER_SIZE, payload, payloadSize);
+    }
+    return totalSize;
+}
+
+size_t encodeCommandFrame(uint8_t flag, const uint8_t* payload, size_t payloadSize,
+                           uint8_t* outBuf, size_t outBufSize) {
+    // Body = [flag][payload...], so size counts the flag byte too.
+    const size_t bodySize = 1 + payloadSize;
+    if (bodySize > MAX_PAYLOAD_SIZE) {
+        return 0;
+    }
+    const size_t totalSize = HEADER_SIZE + bodySize;
+    if (totalSize > outBufSize) {
+        return 0;
+    }
+
+    outBuf[0] = SYNC_0;
+    outBuf[1] = SYNC_1;
+    outBuf[2] = TYPE_INSTRUCTION;
+    outBuf[3] = (uint8_t)bodySize;
+    outBuf[4] = flag;
+
+    if (payloadSize > 0) {
+        memcpy(outBuf + HEADER_SIZE + 1, payload, payloadSize);
     }
     return totalSize;
 }
@@ -151,9 +171,14 @@ bool FrameDecoder::feed(uint8_t byte, DecodedFrame& out) {
             expectedSize_ = byte;
             bytesRead_ = 0;
             if (expectedSize_ == 0) {
-                // Zero-length payload is a complete frame immediately.
-                out.type = (typeByte_ == TYPE_DATA) ? FrameType::Data
-                                                      : FrameType::Instruction;
+                if (typeByte_ == TYPE_INSTRUCTION) {
+                    // A command always carries at least its flag byte, so
+                    // size 0 is malformed -- drop it and resync.
+                    reset();
+                    return false;
+                }
+                // Zero-length data frame: complete frame immediately.
+                out.type = FrameType::Data;
                 out.payloadSize = 0;
                 reset();
                 return true;

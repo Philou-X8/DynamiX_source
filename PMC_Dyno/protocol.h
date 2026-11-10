@@ -3,17 +3,20 @@
 #include <stddef.h>
 #include "data_buffer.h"
 
-// Frame format (see design doc section 5):
+// Frame format (see design doc section 5). All multi-byte values are
+// big-endian and unsigned.
 //
-//   [0xFF][0x00][0xAA | 0x55][size][payload ... size bytes]
+//   [0xFF][0x00][0xAA | 0x55][size][body ... size bytes]
 //
 // The 3rd sync byte doubles as the type flag:
-//   0xAA -> data payload:        size / POINT_WIRE_SIZE Points, back to back
-//   0x55 -> instruction payload: raw bytes, format defined by the
-//                                 command/ack/error/heartbeat content itself
+//   0xAA -> data body:    size / POINT_WIRE_SIZE Points, back to back
+//                          (each: 3B position, 3B force, 4B time_ms)
+//   0x55 -> command body: [flag][payload ...], so size = 1 + payload length.
+//                          A command with no arguments has size = 1.
 //
-// 'size' is the payload length in bytes only (header not included), so
-// max payload is 255 bytes -> max 25 Points per data frame.
+// 'size' is the body length in bytes only (header not included), so
+// max body is 255 bytes -> max 25 Points per data frame, and max command
+// payload is 254 bytes.
 
 constexpr uint8_t SYNC_0 = 0xFF;
 constexpr uint8_t SYNC_1 = 0x00;
@@ -29,12 +32,19 @@ constexpr size_t MAX_FRAME_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE;
 size_t encodeDataFrame(const Point* points, size_t count,
                         uint8_t* outBuf, size_t outBufSize);
 
-// Wraps an already-serialized instruction/ack/error/heartbeat payload into
-// a complete instruction frame (header + payload) in outBuf. Returns total
+// Wraps an already-serialized instruction body (flag byte included) into
+// a complete instruction frame (header + body) in outBuf. Returns total
 // bytes written, or 0 on error (payloadSize > MAX_PAYLOAD_SIZE, or doesn't
-// fit in outBufSize).
+// fit in outBufSize). Prefer encodeCommandFrame() for normal use.
 size_t encodeInstructionFrame(const uint8_t* payload, size_t payloadSize,
                                uint8_t* outBuf, size_t outBufSize);
+
+// Builds a complete command frame: header, size = 1 + payloadSize, flag,
+// then payload. 'payload' may be null when payloadSize is 0. Returns total
+// bytes written, or 0 on error (payloadSize > MAX_PAYLOAD_SIZE - 1, or
+// doesn't fit in outBufSize).
+size_t encodeCommandFrame(uint8_t flag, const uint8_t* payload, size_t payloadSize,
+                           uint8_t* outBuf, size_t outBufSize);
 
 enum class FrameType : uint8_t {
     Data,
