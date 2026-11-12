@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_system.h> // esp_reset_reason()
 
 #include "data_buffer.h"
 #include "protocol.h"
@@ -104,6 +105,39 @@ size_t sensor_avg_count = 0; // readings stored so far, saturates at SENSOR_AVG_
 int32_t sensor_pos_max = -8388608;
 int32_t sensor_pos_min = 8388607;
 
+// --- Boot reason report ----------------------------------------------------
+
+// Why the chip last (re)started. A watchdog / panic / brownout reset can't be
+// reported when it happens (the chip restarts), so it is reported right after
+// the next boot instead.
+const char* resetReasonName(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "POWERON";
+        case ESP_RST_EXT:       return "EXT_PIN";
+        case ESP_RST_SW:        return "SW_RESET";
+        case ESP_RST_PANIC:     return "PANIC";        // crash / exception
+        case ESP_RST_INT_WDT:   return "INT_WDT";      // interrupt watchdog
+        case ESP_RST_TASK_WDT:  return "TASK_WDT";     // task watchdog (starved task)
+        case ESP_RST_WDT:       return "OTHER_WDT";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT";     // supply dipped
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "UNKNOWN";
+    }
+}
+
+// Queues "BOOT: <reason>" as an ESP_message for the GUI log. Opening the
+// serial port from the GUI resets the ESP too (DTR/RTS), so one of these at
+// connect time (EXT_PIN / POWERON) is normal. One in the middle of a run is
+// not: TASK_WDT / INT_WDT / PANIC / BROWNOUT then says what killed it.
+void reportBootReason() {
+    char msg[32];
+    int n = snprintf(msg, sizeof(msg), "BOOT: %s", resetReasonName(esp_reset_reason()));
+    if (n > 0) {
+        g_commsTask.enqueuePriorityMessage(Cmd::ESP_message, (const uint8_t*)msg, (size_t)n);
+    }
+}
+
 // --- Setup ---------------------------------------------------------------
 
 void setup() {
@@ -149,6 +183,7 @@ void setup() {
     g_motorControl.begin();
     g_stateMachine.begin(&g_motorControl, &g_dataBuffer, &g_commsTask, &g_driveComms);
     g_commsTask.begin(&g_dataBuffer, &g_stateMachine, SERIAL_BAUD);
+    reportBootReason(); // sits in the priority queue until the send task starts below
     g_driveComms.begin(DRIVE_RX_PIN, DRIVE_TX_PIN, DRIVE_DE_RE_PIN);
 
     xTaskCreatePinnedToCore(sensorTaskFn, "sensor_position", SENSOR_TASK_STACK_SIZE,
