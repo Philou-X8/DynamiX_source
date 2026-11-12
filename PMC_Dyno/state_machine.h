@@ -45,7 +45,7 @@ public:
     void begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms, DriveComms* drive);
 
     // Called once per main loop iteration (~500 Hz target).
-    void update(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs);
+    void update(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
 
     // Called by the main loop when a pending instruction has been decoded
     // off the priority/instruction queue.
@@ -60,8 +60,8 @@ public:
 
 private:
     void onIdle();
-    void onCalibration(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs);
-    void onOperating(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs);
+    void onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
+    void onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
     void onPanic();
 
     void enterPanic(FaultReason reason);

@@ -13,8 +13,8 @@
 // produced explicitly by protocol.cpp's serialization code instead. See
 // design doc section 4/5.
 struct Point {
-    uint32_t position;   // 24-bit ADC reading, unsigned (0..0xFFFFFF)
-    uint32_t force;      // 24-bit ADC reading, unsigned (0..0xFFFFFF)
+    int32_t position;    // 24-bit signed ADC reading (-8388608..8388607)
+    int32_t force;       // 24-bit signed ADC reading (-8388608..8388607)
     uint32_t time_ms;    // ms since current test/run started
 };
 

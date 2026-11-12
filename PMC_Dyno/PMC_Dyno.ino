@@ -93,16 +93,16 @@ uint32_t loop_cutoff = 0;
 // Rolling buffers of the last SENSOR_AVG_SIZE readings (written by the main
 // loop only, so no lock needed).
 constexpr size_t SENSOR_AVG_SIZE = 10;
-uint32_t sensor_pos_avg[SENSOR_AVG_SIZE] = {0};
+int32_t sensor_pos_avg[SENSOR_AVG_SIZE] = {0};
 size_t sensor_pos_avg_i = 0;
-uint32_t sensor_force_avg[SENSOR_AVG_SIZE] = {0};
+int32_t sensor_force_avg[SENSOR_AVG_SIZE] = {0};
 size_t sensor_force_avg_i = 0;
 size_t sensor_avg_count = 0; // readings stored so far, saturates at SENSOR_AVG_SIZE
 
-// Range of the position average seen so far. Starts inverted (min above max)
-// so the first full window sets both.
-uint32_t sensor_pos_max = 0;
-uint32_t sensor_pos_min = 0xFFFFFF;
+// Range of the position average seen so far (signed 24-bit). Starts inverted
+// (min above max) so the first full window sets both.
+int32_t sensor_pos_max = -8388608;
+int32_t sensor_pos_min = 8388607;
 
 // --- Setup ---------------------------------------------------------------
 
@@ -177,7 +177,7 @@ void setup() {
 // Adds the newest readings to the rolling buffers, then updates the recorded
 // position range from the position average. The range is only updated once
 // the buffer is full, so the zeros it starts with can't drag the minimum down.
-void updateRollingAverages(uint32_t posRaw, uint32_t forceRaw) {
+void updateRollingAverages(int32_t posRaw, int32_t forceRaw) {
     sensor_pos_avg[sensor_pos_avg_i] = posRaw;
     sensor_pos_avg_i = (sensor_pos_avg_i + 1) % SENSOR_AVG_SIZE;
     sensor_force_avg[sensor_force_avg_i] = forceRaw;
@@ -189,40 +189,40 @@ void updateRollingAverages(uint32_t posRaw, uint32_t forceRaw) {
         }
     }
 
-    uint64_t sum = 0;
+    int64_t sum = 0;
     for (size_t i = 0; i < SENSOR_AVG_SIZE; i++) {
         sum += sensor_pos_avg[i];
     }
-    uint32_t posAvg = (uint32_t)(sum / SENSOR_AVG_SIZE);
+    int32_t posAvg = (int32_t)(sum / (int64_t)SENSOR_AVG_SIZE);
 
     if (posAvg < sensor_pos_min) sensor_pos_min = posAvg;
     if (posAvg > sensor_pos_max) sensor_pos_max = posAvg;
 }
 
 // TEMP: answers GUI_calibrate with ESP_calibraion_data. Payload is 9 bytes,
-// each value encoded like a data packet field (24 bit, big-endian):
+// each value encoded like a data packet field (24 bit signed, big-endian):
 // [pos min][pos max][average force].
 void handleCalibrateRequest() {
-    uint32_t posMin = sensor_pos_min;
-    uint32_t posMax = sensor_pos_max;
+    int32_t posMin = sensor_pos_min;
+    int32_t posMax = sensor_pos_max;
     if (posMin > posMax) {
         posMin = 0; // no full window yet, so no range recorded
         posMax = 0;
     }
 
-    uint32_t forceAvg = 0;
+    int32_t forceAvg = 0;
     if (sensor_avg_count > 0) {
-        uint64_t sum = 0;
+        int64_t sum = 0;
         for (size_t i = 0; i < sensor_avg_count; i++) {
             sum += sensor_force_avg[i]; // the first sensor_avg_count slots are the valid ones
         }
-        forceAvg = (uint32_t)(sum / sensor_avg_count);
+        forceAvg = (int32_t)(sum / (int64_t)sensor_avg_count);
     }
 
     uint8_t payload[9];
-    writeUint24BE(posMin, payload);
-    writeUint24BE(posMax, payload + 3);
-    writeUint24BE(forceAvg, payload + 6);
+    writeInt24BE(posMin, payload);
+    writeInt24BE(posMax, payload + 3);
+    writeInt24BE(forceAvg, payload + 6);
     g_commsTask.enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
 }
 
@@ -275,7 +275,7 @@ void loop() {
             g_commsTask.enqueuePriorityMessage(Cmd::ESP_message, buf, sizeof(buf));
         }
 
-        uint32_t posRaw, forceRaw;
+        int32_t posRaw, forceRaw;
         uint32_t posSeq, forceSeq;
         sharedSensorDataRead(g_positionSensor, posRaw, posSeq);
         sharedSensorDataRead(g_forceSensor, forceRaw, forceSeq);

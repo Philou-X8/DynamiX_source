@@ -3,28 +3,33 @@
 
 // --- Point serialization -----------------------------------------------
 // Wire layout per point (10 bytes), big-endian (most significant byte
-// first), all fields unsigned:
-//   [0..2]  position, 24 bits
-//   [3..5]  force,    24 bits
-//   [6..9]  time_ms,  32 bits
+// first):
+//   [0..2]  position, 24 bits, signed (two's complement)
+//   [3..5]  force,    24 bits, signed (two's complement)
+//   [6..9]  time_ms,  32 bits, unsigned
 //
 // Must stay in sync with SerialDecoder.DecodeMessage() on the PC side.
 
-void writeUint24BE(uint32_t v, uint8_t* out) {
-    out[0] = (uint8_t)((v >> 16) & 0xFF);
-    out[1] = (uint8_t)((v >> 8) & 0xFF);
-    out[2] = (uint8_t)(v & 0xFF);
+void writeInt24BE(int32_t v, uint8_t* out) {
+    // Two's complement: the low 24 bits of the int32 are already the 24-bit
+    // two's complement value.
+    const uint32_t u = (uint32_t)v;
+    out[0] = (uint8_t)((u >> 16) & 0xFF);
+    out[1] = (uint8_t)((u >> 8) & 0xFF);
+    out[2] = (uint8_t)(u & 0xFF);
 }
 
-static uint32_t readUint24(const uint8_t* b) {
-    return ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[2];
+int32_t readInt24BE(const uint8_t* b) {
+    const uint32_t u = ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[2];
+    // Sign-extend from bit 23.
+    return (int32_t)((u ^ 0x800000u) - 0x800000u);
 }
 
 static void writePointBytes(const Point& p, uint8_t* out) {
-    // writeUint24 keeps only the low 24 bits, so an out-of-range value
+    // writeInt24BE keeps only the low 24 bits, so an out-of-range value
     // can't leak into the neighbouring field.
-    writeUint24BE(p.position, out);
-    writeUint24BE(p.force, out + 3);
+    writeInt24BE(p.position, out);
+    writeInt24BE(p.force, out + 3);
 
     out[6] = (uint8_t)((p.time_ms >> 24) & 0xFF);
     out[7] = (uint8_t)((p.time_ms >> 16) & 0xFF);
@@ -33,8 +38,8 @@ static void writePointBytes(const Point& p, uint8_t* out) {
 }
 
 static void readPointBytes(const uint8_t* in, Point& p) {
-    p.position = readUint24(in);
-    p.force = readUint24(in + 3);
+    p.position = readInt24BE(in);
+    p.force = readInt24BE(in + 3);
     p.time_ms = ((uint32_t)in[6] << 24) | ((uint32_t)in[7] << 16) |
                 ((uint32_t)in[8] << 8) | (uint32_t)in[9];
 }

@@ -7,8 +7,8 @@
 // bytes -- the SPI transaction itself must happen OUTSIDE the lock (see
 // design doc section 3) so the main loop is never blocked waiting on SPI.
 struct SharedSensorData {
-    uint32_t rawValue;    // latest reading as a 24-bit unsigned value, see
-                          // adcToUnsigned24() for the encoding
+    int32_t rawValue;     // latest reading, signed 24-bit range
+                          // (-8388608..8388607), sign-extended to 32 bits
     uint32_t sequence;    // increments every update; main loop uses this
                           // to detect a stalled sensor task (-> panic)
     volatile bool present; // false until the sensor task has detected an ADC;
@@ -20,15 +20,8 @@ struct SharedSensorData {
 void sharedSensorDataInit(SharedSensorData& s);
 
 // Thread-safe accessors.
-void sharedSensorDataWrite(SharedSensorData& s, uint32_t value);
-void sharedSensorDataRead(SharedSensorData& s, uint32_t& outValue, uint32_t& outSequence);
-
-// Converts the ADS1256's signed reading (-8388608..8388607) to the 24-bit
-// unsigned value that goes on the wire, in offset-binary form: signed 0 maps
-// to 0x800000, full-scale negative to 0 and full-scale positive to 0xFFFFFF.
-// The order is preserved and there is no wrap-around at zero. To get the
-// signed value back: (int32_t)u - 0x800000.
-uint32_t adcToUnsigned24(int32_t signedReading);
+void sharedSensorDataWrite(SharedSensorData& s, int32_t value);
+void sharedSensorDataRead(SharedSensorData& s, int32_t& outValue, uint32_t& outSequence);
 
 // Per-ADC settings. The values are the ADS1256 library's macros (PGA_64,
 // DRATE_1000SPS, DIFF_0_1, ...), so fill them in from the .ino, which

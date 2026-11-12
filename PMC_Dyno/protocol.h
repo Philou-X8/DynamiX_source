@@ -4,7 +4,8 @@
 #include "data_buffer.h"
 
 // Frame format (see design doc section 5). All multi-byte values are
-// big-endian and unsigned.
+// big-endian. Position and force are 24-bit signed (two's complement); time
+// is unsigned.
 //
 //   [0xFF][0x00][0xAA | 0x55][size][body ... size bytes]
 //
@@ -26,10 +27,14 @@ constexpr size_t HEADER_SIZE = 4;
 constexpr size_t MAX_PAYLOAD_SIZE = 255;
 constexpr size_t MAX_FRAME_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE;
 
-// Writes the low 24 bits of 'v' to out[0..2], most significant byte first.
-// Same encoding the data frames use for position and force; also used to
-// pack ADC values into command payloads (e.g. calibration data).
-void writeUint24BE(uint32_t v, uint8_t* out);
+// Writes 'v' as a 24-bit two's complement value to out[0..2], most
+// significant byte first (valid range -8388608..8388607). Same encoding the
+// data frames use for position and force; also used to pack ADC values into
+// command payloads (e.g. calibration data).
+void writeInt24BE(int32_t v, uint8_t* out);
+
+// Reads a 24-bit big-endian two's complement value, sign-extended to int32.
+int32_t readInt24BE(const uint8_t* b);
 
 // Serializes 'count' points into a complete data frame (header + payload)
 // in outBuf. Returns total bytes written, or 0 on error (count too large

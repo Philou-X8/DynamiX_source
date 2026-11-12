@@ -51,7 +51,7 @@ bool StateMachine::sendCommand(uint8_t flag) {
     return comms_->enqueuePriorityMessage(flag, nullptr, 0);
 }
 
-void StateMachine::update(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs) {
+void StateMachine::update(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     switch (state_) {
         case State::Idle:
             onIdle();
@@ -78,7 +78,7 @@ void StateMachine::onIdle() {
     // via handleInstruction) for "start calibration" / "start test".
 }
 
-void StateMachine::onCalibration(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs) {
+void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     // TODO: seek -> slow approach -> stop-near-bottom sequence (design doc
     // open item 4, deferred until drive behavior is characterized). Likely
     // still wants to push Points to dataBuffer_ during this so the
@@ -88,7 +88,7 @@ void StateMachine::onCalibration(uint32_t positionRaw, uint32_t forceRaw, uint32
     (void)timeMs;
 }
 
-void StateMachine::onOperating(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs) {
+void StateMachine::onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     // TODO: iterate the frequency list, >=5 cycles per frequency, while
     // continuously acquiring.
     //

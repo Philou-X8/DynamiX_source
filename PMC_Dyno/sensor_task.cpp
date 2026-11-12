@@ -8,12 +8,16 @@
 
 namespace {
 
-constexpr uint32_t ADC_SIGNED_OFFSET = 0x800000;
-constexpr uint32_t ADC_24BIT_MASK = 0xFFFFFF;
+// Value published while no ADC is wired: a clean "blank" reading of 0.
+constexpr int32_t BLANK_READING = 0;
 
-// Value published while no ADC is wired: signed 0 in the offset-binary
-// encoding, i.e. a clean "blank" reading.
-constexpr uint32_t BLANK_READING = ADC_SIGNED_OFFSET;
+// Clamps to the signed 24-bit range so a stray value can never wrap when it
+// is written to the wire as 3 bytes.
+int32_t clamp24(int32_t v) {
+    if (v > 8388607) return 8388607;
+    if (v < -8388608) return -8388608;
+    return v;
+}
 
 // How long after boot to wait for DRDY to ever go low before deciding no
 // ADC is attached. A live ADS1256 pulls DRDY low within a few ms of power-up.
@@ -48,10 +52,6 @@ bool drdyLowWithin(int8_t pin, uint32_t timeoutUs) {
 
 } // namespace
 
-uint32_t adcToUnsigned24(int32_t signedReading) {
-    return ((uint32_t)(signedReading + (int32_t)ADC_SIGNED_OFFSET)) & ADC_24BIT_MASK;
-}
-
 void sharedSensorDataInit(SharedSensorData& s) {
     s.rawValue = 0;
     s.sequence = 0;
@@ -59,14 +59,14 @@ void sharedSensorDataInit(SharedSensorData& s) {
     s.mutex = xSemaphoreCreateMutex();
 }
 
-void sharedSensorDataWrite(SharedSensorData& s, uint32_t value) {
+void sharedSensorDataWrite(SharedSensorData& s, int32_t value) {
     xSemaphoreTake((SemaphoreHandle_t)s.mutex, portMAX_DELAY);
     s.rawValue = value;
     s.sequence++;
     xSemaphoreGive((SemaphoreHandle_t)s.mutex);
 }
 
-void sharedSensorDataRead(SharedSensorData& s, uint32_t& outValue, uint32_t& outSequence) {
+void sharedSensorDataRead(SharedSensorData& s, int32_t& outValue, uint32_t& outSequence) {
     xSemaphoreTake((SemaphoreHandle_t)s.mutex, portMAX_DELAY);
     outValue = s.rawValue;
     outSequence = s.sequence;
@@ -133,7 +133,7 @@ void sensorTaskFn(void* pvParameters) {
             // DRDY is already low, so the library's own wait returns
             // immediately. The (3-byte) SPI read happens outside any lock.
             int32_t raw = adc->readSingleContinuous();
-            sharedSensorDataWrite(*(params->target), adcToUnsigned24(raw));
+            sharedSensorDataWrite(*(params->target), clamp24(raw));
         } else {
             // No new sample (ADC unplugged or stuck): publish nothing, so the
             // sequence counter stops and the main loop can detect the stall.
