@@ -89,6 +89,7 @@ CommsTask g_commsTask;
 DriveComms g_driveComms;
 
 uint32_t loop_period = 2000; // 2000us -> 2ms -> 500Hz
+//uint32_t loop_period = 4000; // 2000us -> 2ms -> 500Hz
 uint32_t loop_cutoff = 0;
 
 // Rolling buffers of the last SENSOR_AVG_SIZE readings (written by the main
@@ -331,6 +332,10 @@ void loop() {
         // No fixed delay here deliberately -- the loop is meant to run as
         // close to 500 Hz as the work above allows. Add pacing/backoff only if
         // profiling shows it's needed.
+    }
+    else
+    {
+        delayMicroseconds(50);
     }
 
     
