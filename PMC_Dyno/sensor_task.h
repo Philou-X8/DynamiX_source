@@ -23,6 +23,19 @@ void sharedSensorDataInit(SharedSensorData& s);
 void sharedSensorDataWrite(SharedSensorData& s, int32_t value);
 void sharedSensorDataRead(SharedSensorData& s, int32_t& outValue, uint32_t& outSequence);
 
+// Breadcrumb each sensor task leaves in RTC memory (index = SensorTaskParams::id)
+// so a watchdog reset can be traced to the task that was spinning. Valid after
+// a non-power-on reset only.
+extern volatile uint8_t g_sensorStage[2];
+enum SensorStage : uint8_t {
+    STAGE_NONE     = 0, // task not started yet
+    STAGE_PRESENCE = 1, // checking whether an ADC is wired
+    STAGE_LIB_INIT = 2, // inside the ADS1256 library's InitializeADC/config (unbounded waits)
+    STAGE_ABSENT   = 3, // no ADC: publishing blank values
+    STAGE_RUNNING  = 4, // normal sampling loop
+    STAGE_READING  = 5  // inside the SPI read
+};
+
 // Per-ADC settings. The values are the ADS1256 library's macros (PGA_64,
 // DRATE_1000SPS, DIFF_0_1, ...), so fill them in from the .ino, which
 // includes ADS1256.h.
@@ -42,6 +55,7 @@ struct AdcConfig {
 // pointer. Each ADS1256 sits on its own SPI bus (SPIClass), so the two tasks
 // never contend for the bus.
 struct SensorTaskParams {
+    uint8_t id;            // 0 = position, 1 = force; indexes g_sensorStage[]
     SharedSensorData* target;
     SPIClass* spi;         // bus this ADC is wired to (&SPI for VSPI, or an HSPI instance)
     int8_t sckPin;

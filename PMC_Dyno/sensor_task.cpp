@@ -5,6 +5,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
+#include <esp_attr.h>
+
+// Survives a watchdog/panic reset (RTC memory is not cleared by a software
+// reset), so the next boot can report what each task was doing when it died.
+RTC_NOINIT_ATTR volatile uint8_t g_sensorStage[2];
 
 namespace {
 
@@ -27,16 +32,40 @@ constexpr uint32_t PRESENCE_TIMEOUT_MS = 500;
 // sample takes 1 ms at 1000 SPS, so this is a little over one period.
 constexpr uint32_t DRDY_WAIT_US = 1200;
 
+// A live ADS1256 holds DRDY low almost all the time (it only pulses high
+// briefly before each new sample), while an unconnected pin with a pull-up
+// sits high. One noise glitch to LOW must not count as "ADC present": a false
+// positive makes the library's InitializeADC() wait on DRDY forever, which
+// starves the idle task and trips the watchdog. So sample over a few ms and
+// require DRDY to be low in at least 3 of every 4 samples.
+bool drdyLooksAlive(int8_t pin) {
+    constexpr int SAMPLES = 64;
+    int lows = 0;
+    for (int i = 0; i < SAMPLES; i++) {
+        if (digitalRead(pin) == LOW) {
+            lows++;
+        }
+        delayMicroseconds(50);
+    }
+    return lows * 4 >= SAMPLES * 3;
+}
+
 // Polls DRDY for up to timeoutMs, yielding between polls.
 bool drdyGoesLow(int8_t pin, uint32_t timeoutMs) {
     const uint32_t start = millis();
     while (millis() - start < timeoutMs) {
-        if (digitalRead(pin) == LOW) {
+        if (digitalRead(pin) == LOW && drdyLooksAlive(pin)) {
             return true;
         }
         vTaskDelay(1);
     }
     return false;
+}
+
+// What this task is doing, for the post-reset report. See sensorStage names
+// in sensor_task.h.
+inline void setStage(uint8_t id, uint8_t stage) {
+    g_sensorStage[id & 1] = stage;
 }
 
 // Busy-waits (briefly) for DRDY low. Bounded, unlike the library's own wait.
@@ -145,7 +174,10 @@ void sensorTaskFn(void* pvParameters) {
     params->spi->begin(params->sckPin, params->misoPin, params->mosiPin, cfg.csPin);
 
     ADS1256* adc = nullptr;
+    const uint8_t id = params->id;
+    setStage(id, STAGE_PRESENCE);
     if (drdyGoesLow(cfg.drdyPin, PRESENCE_TIMEOUT_MS)) {
+        setStage(id, STAGE_LIB_INIT); // the library's unbounded waits live here
         // The library is built once and never freed (the task never exits).
         adc = new ADS1256(cfg.drdyPin, cfg.resetPin, cfg.syncPin, cfg.csPin,
                           cfg.vref, params->spi);
@@ -162,6 +194,7 @@ void sensorTaskFn(void* pvParameters) {
 
         params->target->present = true;
     }
+    setStage(id, adc == nullptr ? STAGE_ABSENT : STAGE_RUNNING);
     // else: nothing is wired. Leave 'present' false and publish a blank value.
 
     const TickType_t periodTicks = pdMS_TO_TICKS(2); // target ~500 Hz
@@ -177,7 +210,9 @@ void sensorTaskFn(void* pvParameters) {
             // publish a blank reading.
             sharedSensorDataWrite(*(params->target), BLANK_READING);
         } else if (drdyLowWithin(cfg.drdyPin, DRDY_WAIT_US) &&
-                   readSampleBounded(params->spi, cfg.csPin, cfg.drdyPin, streaming, raw)) {
+                   (setStage(id, STAGE_READING),
+                    readSampleBounded(params->spi, cfg.csPin, cfg.drdyPin, streaming, raw))) {
+            setStage(id, STAGE_RUNNING);
             // Every wait above and inside the read is bounded. The (3-byte)
             // SPI read happens outside any lock.
             sharedSensorDataWrite(*(params->target), clamp24(raw));

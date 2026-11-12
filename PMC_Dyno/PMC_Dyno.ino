@@ -131,8 +131,19 @@ const char* resetReasonName(esp_reset_reason_t r) {
 // connect time (EXT_PIN / POWERON) is normal. One in the middle of a run is
 // not: TASK_WDT / INT_WDT / PANIC / BROWNOUT then says what killed it.
 void reportBootReason() {
-    char msg[32];
-    int n = snprintf(msg, sizeof(msg), "BOOT: %s", resetReasonName(esp_reset_reason()));
+    char msg[48];
+    const esp_reset_reason_t reason = esp_reset_reason();
+    int n;
+    if (reason == ESP_RST_POWERON) {
+        // RTC memory holds garbage after a power-on, so the stages mean nothing.
+        n = snprintf(msg, sizeof(msg), "BOOT: %s", resetReasonName(reason));
+    } else {
+        // Where each sensor task was when the last run died (see SensorStage in
+        // sensor_task.h): 1 presence check, 2 library init, 3 no ADC, 4 running,
+        // 5 reading. P = position, F = force.
+        n = snprintf(msg, sizeof(msg), "BOOT: %s P=%u F=%u", resetReasonName(reason),
+                     (unsigned)g_sensorStage[0], (unsigned)g_sensorStage[1]);
+    }
     if (n > 0) {
         g_commsTask.enqueuePriorityMessage(Cmd::ESP_message, (const uint8_t*)msg, (size_t)n);
     }
@@ -146,6 +157,7 @@ void setup() {
 
     // Load cell on AIN1/AIN2 of the board (chip channels 0/1): bridge on
     // 5 V excitation, so gain 64 (+-39 mV) covers the full range.
+    g_forceTaskParams.id = 1;
     g_forceTaskParams.target = &g_forceSensor;
     g_forceTaskParams.spi = &SPI;
     g_forceTaskParams.sckPin = FORCE_SPI_SCK;
@@ -165,6 +177,7 @@ void setup() {
     // pins. TODO: real settings (probably PGA_1, a single-ended input) once it
     // is wired. With nothing attached the task detects that and publishes a
     // blank value instead of hanging.
+    g_positionTaskParams.id = 0;
     g_positionTaskParams.target = &g_positionSensor;
     g_positionTaskParams.spi = &g_hspi;
     g_positionTaskParams.sckPin = POS_SPI_SCK;
