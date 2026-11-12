@@ -2,12 +2,44 @@
 
 #include "state_machine.h"
 #include "comms_task.h"
+#include "drive_comms.h"
 
-void StateMachine::begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms) {
+namespace {
+
+// Modbus frames for the drive (slave 0x03, function 0x06 = write one
+// register), CRC included. DriveComms::sendFrame re-checks the CRC, so a typo
+// here gets rejected instead of sent.
+//
+// Stop: register 0x2000 (control command) = 0x0005 (stop). Tested on the drive.
+const uint8_t DRIVE_STOP_FRAME[] = {0x03, 0x06, 0x20, 0x00, 0x00, 0x05, 0x43, 0xEB};
+// Speed 0: register 0x800A = P00.10 (set frequency, 0.01 Hz) = 0. The 0x8000
+// bit makes the write go to the drive's RAM only, so it isn't saved to EEPROM
+// (TD350 manual 9.4.5.1).
+const uint8_t DRIVE_SPEED_ZERO_FRAME[] = {0x03, 0x06, 0x80, 0x0A, 0x00, 0x00, 0x81, 0xEA};
+
+} // namespace
+
+void StateMachine::begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms, DriveComms* drive) {
     motor_ = motor;
     dataBuffer_ = dataBuffer;
     comms_ = comms;
+    drive_ = drive;
     state_ = State::Idle;
+}
+
+void StateMachine::stopDrive() {
+    if (!drive_) {
+        return;
+    }
+    // Stop first (urgent: replaces anything still queued for the drive),
+    // then zero the speed so the next start doesn't resume at the old one.
+    // DriveComms spaces the two frames apart.
+    bool ok = drive_->sendFrame(DRIVE_STOP_FRAME, sizeof(DRIVE_STOP_FRAME), true);
+    ok = drive_->sendFrame(DRIVE_SPEED_ZERO_FRAME, sizeof(DRIVE_SPEED_ZERO_FRAME)) && ok;
+    if (!ok && comms_) {
+        const char msg[] = "Drive stop not sent";
+        comms_->enqueuePriorityMessage(Cmd::ESP_error, (const uint8_t*)msg, sizeof(msg) - 1);
+    }
 }
 
 bool StateMachine::sendCommand(uint8_t flag) {
@@ -75,7 +107,8 @@ void StateMachine::onOperating(uint32_t positionRaw, uint32_t forceRaw, uint32_t
 
     double time_f = double(timeMs) / 1000000;
     Point p;
-    p.position = uint32_t( 1000 + cos(time_f * 4) * 800 );
+    //p.position = uint32_t( 1000 + cos(time_f * 4) * 800 );
+    p.position = positionRaw;
     p.force = forceRaw;
     p.time_ms = timeMs;
     if (dataBuffer_) dataBuffer_->push(p);
@@ -128,6 +161,8 @@ void StateMachine::handleInstruction(const Instruction& instr) {
     //                            design doc section 2 -- panic does not
     //                            auto-recover)
 
+    // TODO: handle GUI_calibrate
+
     // Handshake-only MVP: replies carry no payload, and no drive checks are
     // done yet -- we just tell the GUI what it wants to hear. State is
     // changed before the reply is queued so the ESP is already in the new
@@ -156,6 +191,7 @@ void StateMachine::handleInstruction(const Instruction& instr) {
             break;
         case Cmd::GUI_abort:
             enterIdle();
+            stopDrive();
             // TODO: ack with ESP_run_finished once the GUI has a Stopping state.
             break;
         default:

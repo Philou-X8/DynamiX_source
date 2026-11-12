@@ -23,6 +23,7 @@ constexpr uint8_t ESP_emergency       = 8;
 constexpr uint8_t ESP_emergency_clear = 9;
 constexpr uint8_t ESP_door_open       = 10;
 constexpr uint8_t ESP_door_close      = 11;
+constexpr uint8_t ESP_calibration_data = 50;  // payload: pos min(3), pos max(3), idle force(3), big-endian.
 
 // GUI -> ESP
 constexpr uint8_t GUI_check_connection = 12; // ping
@@ -32,5 +33,8 @@ constexpr uint8_t GUI_wave_format      = 16;
 constexpr uint8_t GUI_TAR_request      = 17;
 constexpr uint8_t GUI_bottom_out       = 18;
 constexpr uint8_t GUI_abort            = 19;
+constexpr uint8_t GUI_calibrate        = 40; // request pos min/max + current load cell reading
+constexpr uint8_t GUI_set_rpm          = 41; // TEMP debug: payload is a complete Modbus frame (CRC included)
+                                             // that the ESP forwards to the motor drive
 
 } // namespace Cmd

@@ -26,6 +26,11 @@ constexpr size_t HEADER_SIZE = 4;
 constexpr size_t MAX_PAYLOAD_SIZE = 255;
 constexpr size_t MAX_FRAME_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE;
 
+// Writes the low 24 bits of 'v' to out[0..2], most significant byte first.
+// Same encoding the data frames use for position and force; also used to
+// pack ADC values into command payloads (e.g. calibration data).
+void writeUint24BE(uint32_t v, uint8_t* out);
+
 // Serializes 'count' points into a complete data frame (header + payload)
 // in outBuf. Returns total bytes written, or 0 on error (count too large
 // for outBufSize, or count > MAX_POINTS_PER_BUFFER).

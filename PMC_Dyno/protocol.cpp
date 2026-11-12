@@ -10,7 +10,7 @@
 //
 // Must stay in sync with SerialDecoder.DecodeMessage() on the PC side.
 
-static void writeUint24(uint32_t v, uint8_t* out) {
+void writeUint24BE(uint32_t v, uint8_t* out) {
     out[0] = (uint8_t)((v >> 16) & 0xFF);
     out[1] = (uint8_t)((v >> 8) & 0xFF);
     out[2] = (uint8_t)(v & 0xFF);
@@ -23,8 +23,8 @@ static uint32_t readUint24(const uint8_t* b) {
 static void writePointBytes(const Point& p, uint8_t* out) {
     // writeUint24 keeps only the low 24 bits, so an out-of-range value
     // can't leak into the neighbouring field.
-    writeUint24(p.position, out);
-    writeUint24(p.force, out + 3);
+    writeUint24BE(p.position, out);
+    writeUint24BE(p.force, out + 3);
 
     out[6] = (uint8_t)((p.time_ms >> 24) & 0xFF);
     out[7] = (uint8_t)((p.time_ms >> 16) & 0xFF);

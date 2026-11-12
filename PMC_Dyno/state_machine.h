@@ -34,12 +34,15 @@ struct Instruction {
 // comms_task.h includes this header (for Instruction), so only forward
 // declare here; state_machine.cpp includes the full definition.
 class CommsTask;
+class DriveComms;
 
 class StateMachine {
 public:
     // 'comms' is used to send replies/acks back to the GUI (via its priority
     // queue). May be null, in which case replies are silently skipped.
-    void begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms);
+    // 'drive' is the Modbus link to the motor drive, used to stop it on abort.
+    // May be null, in which case drive commands are skipped.
+    void begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms, DriveComms* drive);
 
     // Called once per main loop iteration (~500 Hz target).
     void update(uint32_t positionRaw, uint32_t forceRaw, uint32_t timeMs);
@@ -68,12 +71,17 @@ private:
     // if comms isn't wired up or the priority queue is full.
     bool sendCommand(uint8_t flag);
 
+    // Tell the motor drive to stop and set its speed to 0 (hardcoded Modbus
+    // frames). Reports an error to the GUI if a frame couldn't be queued.
+    void stopDrive();
+
     State state_ = State::Idle;
     FaultReason lastFault_ = FaultReason::None;
 
     MotorControl* motor_ = nullptr;
     DoubleBuffer* dataBuffer_ = nullptr;
     CommsTask* comms_ = nullptr;
+    DriveComms* drive_ = nullptr;
 
     // TODO: operating-mode state (current target frequency, cycle count,
     // frequency list/index) once that part of the design is fleshed out.
