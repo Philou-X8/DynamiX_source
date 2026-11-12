@@ -33,7 +33,8 @@ enum SensorStage : uint8_t {
     STAGE_LIB_INIT = 2, // inside the ADS1256 library's InitializeADC/config (unbounded waits)
     STAGE_ABSENT   = 3, // no ADC: publishing blank values
     STAGE_RUNNING  = 4, // normal sampling loop
-    STAGE_READING  = 5  // inside the SPI read
+    STAGE_READING  = 5, // inside the SPI read
+    STAGE_INIT_FAILED = 6 // library init never finished (gave up after a timeout); treated as absent
 };
 
 // Per-ADC settings. The values are the ADS1256 library's macros (PGA_64,

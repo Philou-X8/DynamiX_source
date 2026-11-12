@@ -124,6 +124,28 @@ bool readSampleBounded(SPIClass* spi, int8_t csPin, int8_t drdyPin,
     return drdyHighWithin(drdyPin, DRDY_HIGH_WAIT_US);
 }
 
+// Normal init takes ~4 s (the library's built-in delays), so this is generous.
+constexpr uint32_t INIT_TIMEOUT_MS = 15000;
+
+struct InitJob {
+    ADS1256* adc;
+    const AdcConfig* cfg;
+    volatile bool done;
+};
+
+// Same sequence as the ESPLOADCELL test sketch.
+void adcInitTaskFn(void* arg) {
+    InitJob* job = (InitJob*)arg;
+    job->adc->InitializeADC();
+    job->adc->setAutoCal(1);
+    job->adc->setBuffer(job->cfg->buffer ? 1 : 0);
+    job->adc->setPGA(job->cfg->pga);
+    job->adc->setDRATE(job->cfg->drate);
+    job->adc->setMUX(job->cfg->mux);
+    job->done = true;
+    vTaskDelete(nullptr);
+}
+
 } // namespace
 
 void sharedSensorDataInit(SharedSensorData& s) {
@@ -179,22 +201,41 @@ void sensorTaskFn(void* pvParameters) {
     if (drdyGoesLow(cfg.drdyPin, PRESENCE_TIMEOUT_MS)) {
         setStage(id, STAGE_LIB_INIT); // the library's unbounded waits live here
         // The library is built once and never freed (the task never exits).
-        adc = new ADS1256(cfg.drdyPin, cfg.resetPin, cfg.syncPin, cfg.csPin,
-                          cfg.vref, params->spi);
+        ADS1256* candidate = new ADS1256(cfg.drdyPin, cfg.resetPin, cfg.syncPin, cfg.csPin,
+                                         cfg.vref, params->spi);
         pinMode(cfg.drdyPin, INPUT_PULLUP); // the constructor reset it to plain INPUT
 
-        // Same sequence as the ESPLOADCELL test sketch. This takes a few
-        // seconds because of the library's built-in delays.
-        adc->InitializeADC();
-        adc->setAutoCal(1);
-        adc->setBuffer(cfg.buffer ? 1 : 0);
-        adc->setPGA(cfg.pga);
-        adc->setDRATE(cfg.drate);
-        adc->setMUX(cfg.mux);
-
-        params->target->present = true;
+        // The library's init and config calls wait on DRDY with unbounded
+        // while() loops, and I can't bound those. So they run in a helper task
+        // at the IDLE priority: if one of them spins forever it only shares
+        // the core with the idle task (round-robin) instead of starving it, so
+        // the watchdog stays fed. This task gives up on it after a timeout and
+        // treats the ADC as absent.
+        InitJob job = {candidate, &cfg, false};
+        TaskHandle_t helper = nullptr;
+        xTaskCreatePinnedToCore(adcInitTaskFn, "adc_init", 4096, &job,
+                                tskIDLE_PRIORITY, &helper, xPortGetCoreID());
+        const uint32_t initStart = millis();
+        while (!job.done && millis() - initStart < INIT_TIMEOUT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        if (job.done) {
+            adc = candidate;
+            params->target->present = true;
+        } else {
+            // Stuck inside the library. Kill the helper; its SPI bus may be
+            // left locked, but this ADC is never touched again.
+            if (helper != nullptr) {
+                vTaskDelete(helper);
+            }
+            setStage(id, STAGE_INIT_FAILED);
+        }
     }
-    setStage(id, adc == nullptr ? STAGE_ABSENT : STAGE_RUNNING);
+    if (adc != nullptr) {
+        setStage(id, STAGE_RUNNING);
+    } else if (g_sensorStage[id & 1] != STAGE_INIT_FAILED) {
+        setStage(id, STAGE_ABSENT);
+    }
     // else: nothing is wired. Leave 'present' false and publish a blank value.
 
     const TickType_t periodTicks = pdMS_TO_TICKS(2); // target ~500 Hz
