@@ -268,10 +268,18 @@ void handleCalibrateRequest() {
         forceAvg = (int32_t)(sum / (int64_t)sensor_avg_count);
     }
 
+
+    int pos_scaled_min = (posMin * 25.0) / 1257689.0;
+    int pos_scaled_max = (posMax * 25.0) / 1257689.0;
+    int force_scaled = (0.004575 * forceAvg) - 64.72;
+
     uint8_t payload[9];
-    writeInt24BE(posMin, payload);
-    writeInt24BE(posMax, payload + 3);
-    writeInt24BE(forceAvg, payload + 6);
+    //writeInt24BE(posMin, payload);
+    //writeInt24BE(posMax, payload + 3);
+    //writeInt24BE(forceAvg, payload + 6);
+    writeInt24BE(pos_scaled_min, payload);
+    writeInt24BE(pos_scaled_max, payload + 3);
+    writeInt24BE(force_scaled, payload + 6);
     g_commsTask.enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
 }
 
@@ -304,8 +312,13 @@ void loop() {
         // Debug commands that don't go through the state machine
         if (instr.flag == Cmd::GUI_calibrate) {
             handleCalibrateRequest();
-        } else if (instr.flag == Cmd::GUI_set_rpm) {
+        } 
+        else if (instr.flag == Cmd::GUI_set_rpm) {
             handleSetRpm(instr);
+        }
+        else if (instr.flag == Cmd::GUI_check_connection) {
+            sensor_pos_max = -8388608;
+            sensor_pos_min = 8388608;
         }
     }
 
@@ -336,9 +349,15 @@ void loop() {
         // g_stateMachine.raiseFault(FaultReason::SensorStalled) -- design doc
         // section 7.
 
+        int pos_scaled = 0;
+        int force_scaled = 0;
+        pos_scaled = (posRaw * 25.0) / 1257689.0;
+        force_scaled = (0.004575 * forceRaw) - 64.72;
+
+
         // the run counts cycles against the position range seen so far
         g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max);
-        g_stateMachine.update(posRaw, forceRaw, loop_time);
+        g_stateMachine.update(pos_scaled, force_scaled, loop_time);
 
         // TODO: measure actual loop iteration time here and compare against
         // the ~2ms budget; call raiseFault(FaultReason::LoopTimingDrift) if
