@@ -357,7 +357,7 @@ void loop() {
 
         // the run counts cycles against the position range seen so far
         g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max);
-        g_stateMachine.update(pos_scaled, force_scaled, loop_time);
+        g_stateMachine.update(posRaw, forceRaw, loop_time);
 
         // TODO: measure actual loop iteration time here and compare against
         // the ~2ms budget; call raiseFault(FaultReason::LoopTimingDrift) if
