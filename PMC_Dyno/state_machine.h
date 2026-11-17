@@ -146,4 +146,13 @@ private:
 
     int32_t posMin_ = 0;
     int32_t posMax_ = 0;
+
+    // The last two frames sent to the drive (newest first), for error reports.
+    struct SentFrame {
+        uint8_t function = 0;
+        uint16_t reg = 0;
+        uint16_t value = 0;
+        bool valid = false;
+    };
+    SentFrame recentFrames_[2];
 };

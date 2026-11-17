@@ -70,7 +70,18 @@ void StateMachine::setPositionRange(int32_t min, int32_t max) {
 }
 
 bool StateMachine::sendDriveFrame(const uint8_t* frame, size_t length) {
-    return drive_ && drive_->sendFrame(frame, length);
+    const bool ok = drive_ && drive_->sendFrame(frame, length);
+    if (ok && length >= 6) {
+        // Remember the last two frames (function, register, value) so a drive
+        // error reply, which doesn't say which request it answers, can be
+        // reported with the likely culprits.
+        recentFrames_[1] = recentFrames_[0];
+        recentFrames_[0].function = frame[1];
+        recentFrames_[0].reg = (uint16_t)((frame[2] << 8) | frame[3]);
+        recentFrames_[0].value = (uint16_t)((frame[4] << 8) | frame[5]);
+        recentFrames_[0].valid = true;
+    }
+    return ok;
 }
 
 void StateMachine::stopDrive() {
@@ -278,8 +289,17 @@ void StateMachine::finishStep(uint32_t endUs) {
 void StateMachine::handleDriveResponse(const DriveFrame& frame) {
     uint8_t functionCode, errorCode;
     if (parseExceptionResponse(frame.bytes, frame.length, DRIVE_ADDRESS, functionCode, errorCode)) {
-        char msg[40];
-        snprintf(msg, sizeof(msg), "Drive error: func 0x%02X code 0x%02X", functionCode, errorCode);
+        // e.g. "Drive error: func 0x06 code 0x03 | last sent: 0x06 reg 0x800A val 0x03E8 ; 0x06 reg 0x2000 val 0x0001"
+        // (newest first; the refused request is one of them)
+        char msg[128];
+        int n = snprintf(msg, sizeof(msg), "Drive error: func 0x%02X code 0x%02X | last sent:", functionCode, errorCode);
+        for (int i = 0; i < 2; i++) {
+            if (recentFrames_[i].valid && n > 0 && n < (int)sizeof(msg)) {
+                n += snprintf(msg + n, sizeof(msg) - n, "%s 0x%02X reg 0x%04X val 0x%04X",
+                              i == 0 ? "" : " ;", recentFrames_[i].function,
+                              recentFrames_[i].reg, recentFrames_[i].value);
+            }
+        }
         sendError(msg);
         if (state_ == State::Operating) {
             raiseFault(FaultReason::DriveFault);
