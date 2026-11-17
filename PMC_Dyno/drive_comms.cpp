@@ -16,22 +16,6 @@ constexpr uint32_t FRAME_GAP_MS = 5;
 
 } // namespace
 
-uint16_t modbusCrc16(const uint8_t* data, size_t length) {
-    uint16_t crc = 0xFFFF;
-    for (size_t pos = 0; pos < length; pos++) {
-        crc ^= data[pos];
-        for (int i = 0; i < 8; i++) {
-            if (crc & 0x0001) {
-                crc >>= 1;
-                crc ^= 0xA001;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    return crc;
-}
-
 void DriveComms::begin(int8_t rxPin, int8_t txPin, int8_t dePin, uint32_t baud) {
     dePin_ = dePin;
     pinMode(dePin_, OUTPUT);
@@ -47,8 +31,7 @@ bool DriveComms::sendFrame(const uint8_t* frame, size_t length, bool urgent) {
     if (length < 4 || length > DRIVE_MAX_FRAME) {
         return false; // address + function + CRC is the shortest valid frame
     }
-    uint16_t crc = modbusCrc16(frame, length - 2);
-    if (frame[length - 2] != (crc & 0xFF) || frame[length - 1] != (crc >> 8)) {
+    if (!modbusFrameCrcOk(frame, length)) {
         return false;
     }
 

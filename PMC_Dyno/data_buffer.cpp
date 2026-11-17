@@ -43,3 +43,9 @@ bool DoubleBuffer::trySwap(Point* outBuffer, size_t& outCount) {
 bool DoubleBuffer::forceSwap(Point* outBuffer, size_t& outCount) {
     return swapLocked(outBuffer, outCount, /*force=*/true);
 }
+
+void DoubleBuffer::reset() {
+    xSemaphoreTake((SemaphoreHandle_t)mutex_, portMAX_DELAY);
+    writeCount_ = 0;
+    xSemaphoreGive((SemaphoreHandle_t)mutex_);
+}

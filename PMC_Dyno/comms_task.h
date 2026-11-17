@@ -32,6 +32,11 @@ public:
     // outInstr if one was pending; non-blocking.
     bool popInstruction(Instruction& outInstr);
 
+    // Asks the send task to also send the points sitting in a partly filled
+    // buffer (normally only a full buffer is sent). Called at the end of a
+    // run so its last points reach the GUI. Safe to call from the main loop.
+    void requestFlush();
+
     // FreeRTOS task entry points (launched via xTaskCreatePinnedToCore in
     // main.ino).
     static void sendTaskFn(void* pvParameters);
@@ -43,6 +48,8 @@ private:
 
     void* priorityQueueHandle_ = nullptr;   // QueueHandle_t, opaque here
     void* instructionQueueHandle_ = nullptr; // QueueHandle_t, opaque here
+
+    volatile bool flushRequested_ = false;
 
     // TODO: fixed-size element type for the priority queue (frame bytes +
     // length) and for the instruction queue (Instruction, from

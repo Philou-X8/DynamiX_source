@@ -289,11 +289,11 @@ void loop() {
     //uint32_t loopStartMs = millis();
     uint32_t loop_time = micros();
 
-    // Drain whatever the drive sent back. Nothing uses it yet, but the queue
-    // would fill up and drop new frames if it were never emptied.
+    // Whatever the drive sent back: the state machine uses the running
+    // frequency answers and reports errors; the rest is ignored there.
     DriveFrame driveFrame;
     while (g_driveComms.popResponse(driveFrame)) {
-        // TODO: parse the drive's reply (fault codes, echoed writes, ...)
+        g_stateMachine.handleDriveResponse(driveFrame);
     }
 
     // handle incomming serial instructions
@@ -336,6 +336,8 @@ void loop() {
         // g_stateMachine.raiseFault(FaultReason::SensorStalled) -- design doc
         // section 7.
 
+        // the run counts cycles against the position range seen so far
+        g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max);
         g_stateMachine.update(posRaw, forceRaw, loop_time);
 
         // TODO: measure actual loop iteration time here and compare against

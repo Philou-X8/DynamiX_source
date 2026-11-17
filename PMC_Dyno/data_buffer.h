@@ -64,6 +64,10 @@ public:
     // (outCount would be 0).
     bool forceSwap(Point* outBuffer, size_t& outCount);
 
+    // Drops the points waiting in the write buffer without sending them.
+    // Called at the start of a run so leftovers of the previous one aren't sent.
+    void reset();
+
 private:
     bool swapLocked(Point* outBuffer, size_t& outCount, bool force);
 

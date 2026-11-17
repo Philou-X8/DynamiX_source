@@ -13,7 +13,9 @@ struct PriorityMsg {
 };
 
 constexpr size_t PRIORITY_QUEUE_DEPTH = 4;
-constexpr size_t INSTRUCTION_QUEUE_DEPTH = 8;
+// A run is sent as one GUI_send_sequence per step followed by GUI_run_start,
+// all in one burst, so the queue has to hold a whole sequence.
+constexpr size_t INSTRUCTION_QUEUE_DEPTH = 16;
 
 } // namespace
 
@@ -45,6 +47,10 @@ bool CommsTask::popInstruction(Instruction& outInstr) {
     return xQueueReceive((QueueHandle_t)instructionQueueHandle_, &outInstr, 0) == pdTRUE;
 }
 
+void CommsTask::requestFlush() {
+    flushRequested_ = true;
+}
+
 void CommsTask::sendTaskFn(void* pvParameters) {
     CommsTask* self = (CommsTask*)pvParameters;
 
@@ -60,12 +66,16 @@ void CommsTask::sendTaskFn(void* pvParameters) {
             continue;
         }
 
-        // Otherwise, data path: send once the write buffer is full.
-        // TODO: also call dataBuffer_->forceSwap(...) here on a
-        // state-machine-exit signal, per design doc open item 2, instead
-        // of only ever swapping on "full".
+        // Otherwise, data path: send once the write buffer is full, or, when
+        // the state machine asked for a flush (end of a run), whatever is in it.
         size_t count = 0;
-        if (self->dataBuffer_->trySwap(pointBuf, count)) {
+        bool haveData = self->dataBuffer_->trySwap(pointBuf, count);
+        if (!haveData && self->flushRequested_) {
+            // Clear the request first: points pushed after this would raise it again
+            self->flushRequested_ = false;
+            haveData = self->dataBuffer_->forceSwap(pointBuf, count);
+        }
+        if (haveData) {
             size_t frameLen = encodeDataFrame(pointBuf, count, frameBuf, sizeof(frameBuf));
             if (frameLen > 0) {
                 Serial.write(frameBuf, frameLen);

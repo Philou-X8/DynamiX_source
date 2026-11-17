@@ -24,10 +24,12 @@ constexpr uint8_t ESP_emergency_clear = 9;
 constexpr uint8_t ESP_door_open       = 10;
 constexpr uint8_t ESP_door_close      = 11;
 constexpr uint8_t ESP_calibration_data = 50;  // payload: pos min(3), pos max(3), idle force(3), big-endian.
+constexpr uint8_t ESP_sequence_separator = 51; // payload: start timestamp(4), end timestamp(4), big-endian, in
+                                               // microseconds since the run started (same clock as the points)
 
 // GUI -> ESP
 constexpr uint8_t GUI_check_connection = 12; // ping
-constexpr uint8_t GUI_run_request      = 14;
+constexpr uint8_t GUI_run_request      = 14; // payload: 1 byte, number of GUI_send_sequence items that will follow
 constexpr uint8_t GUI_run_start        = 15;
 constexpr uint8_t GUI_wave_format      = 16;
 constexpr uint8_t GUI_TAR_request      = 17;
@@ -36,5 +38,6 @@ constexpr uint8_t GUI_abort            = 19;
 constexpr uint8_t GUI_calibrate        = 40; // request pos min/max + current load cell reading
 constexpr uint8_t GUI_set_rpm          = 41; // TEMP debug: payload is a complete Modbus frame (CRC included)
                                              // that the ESP forwards to the motor drive
+constexpr uint8_t GUI_send_sequence    = 42; // payload (10 bytes): order(1), number of cycles(1), Modbus frame setting the drive frequency(8)
 
 } // namespace Cmd

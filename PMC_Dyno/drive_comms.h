@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "drive_protocol.h" // modbusCrc16 and the other frame helpers live there
 
 // Serial link to the motor drive: RS-485 (through the conversion card) on
 // UART2, Modbus RTU, 9600 baud, 8E1. See the TD350 manual, chapter 9.
@@ -27,9 +28,6 @@ struct DriveFrame {
     uint8_t bytes[DRIVE_MAX_FRAME];
     size_t length;
 };
-
-// Modbus RTU CRC-16 (poly 0xA001). In a frame it is sent low byte first.
-uint16_t modbusCrc16(const uint8_t* data, size_t length);
 
 class DriveComms {
 public:
