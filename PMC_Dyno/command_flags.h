@@ -17,6 +17,7 @@ constexpr uint8_t ESP_message         = 2;
 constexpr uint8_t ESP_error           = 3;
 constexpr uint8_t ESP_debug           = 4;
 constexpr uint8_t ESP_run_accepted    = 5;
+constexpr uint8_t ESP_run_denied      = 55;
 constexpr uint8_t ESP_run_starting    = 6;
 constexpr uint8_t ESP_run_finished    = 7;
 constexpr uint8_t ESP_emergency       = 8;
@@ -39,5 +40,5 @@ constexpr uint8_t GUI_calibrate        = 40; // request pos min/max + current lo
 constexpr uint8_t GUI_set_rpm          = 41; // TEMP debug: payload is a complete Modbus frame (CRC included)
                                              // that the ESP forwards to the motor drive
 constexpr uint8_t GUI_send_sequence    = 42; // payload (10 bytes): order(1), number of cycles(1), Modbus frame setting the drive frequency(8)
-
+constexpr uint8_t GUI_force_reboot     = 43;
 } // namespace Cmd

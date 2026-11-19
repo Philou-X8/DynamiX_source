@@ -23,7 +23,8 @@ enum class FaultReason : uint8_t {
     SensorOutOfRange,    // saturated / implausible reading
     DriveFault,          // motor drive reported an error
     LoopTimingDrift,      // main loop iteration overran its ~2ms budget
-    CycleTimeout          // running at speed but no cycle completed for a long time
+    CycleTimeout,          // running at speed but no cycle completed for a long time
+    ForceFailsafe       // Loadcell detected force over limits
 };
 
 // A decoded command frame: the flag byte (see command_flags.h) plus its
@@ -81,6 +82,13 @@ private:
         Counting    // at speed, counting cycles from the position sensor
     };
 
+    enum class CalibrationPhase : uint8_t {
+        BottomLoad, // dyno not moving yet, calibrate bottom
+        FindStroke, // do a few cycles to find the min/max pos
+        TopLoad,    // try to stop at the top to measure the force
+        CalibComplete // finished, wrap things up
+    };
+
     void onIdle();
     void onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
     void onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
@@ -118,8 +126,6 @@ private:
     CommsTask* comms_ = nullptr;
     DriveComms* drive_ = nullptr;
 
-    // TODO: calibration-mode state (seek/approach/stop sub-step).
-
     // The run's steps, filled by GUI_send_sequence while Armed. A step is
     // stored at its 'order' so the sequence runs in the order the GUI meant,
     // and stepReceived_ lets GUI_run_start check that none were lost.
@@ -144,8 +150,20 @@ private:
     uint16_t driveFreqCentiHz_ = 0;
     bool driveFreqFresh_ = false;
 
+    CalibrationPhase calibPhase_ = CalibrationPhase::BottomLoad;
+
+    static constexpr size_t SENSOR_AVG_SIZE = 128;
+    int32_t sensor_pos_avg[SENSOR_AVG_SIZE] = {0};
+    size_t sensor_pos_avg_i = 0;
+    int32_t sensor_force_avg[SENSOR_AVG_SIZE] = {0};
+    size_t sensor_force_avg_i = 0;  
+    size_t sensor_avg_count = 0; // readings stored so far
     int32_t posMin_ = 0;
     int32_t posMax_ = 0;
+    int32_t forceBot_ = 0;
+    int32_t forceTop_ = 0;
+
+    int32_t forceFailsafe_ = 0;
 
     // The last two frames sent to the drive (newest first), for error reports.
     struct SentFrame {

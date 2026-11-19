@@ -31,10 +31,10 @@ constexpr int32_t SPEED_TOLERANCE_CENTIHZ = 50; // 0.50 Hz
 // takes to speed up.
 constexpr uint32_t SPEEDUP_ASSUMED_MS = 3000;
 // If it answers but never gets to the speed, give up after this long.
-constexpr uint32_t SPEEDUP_TIMEOUT_MS = 30000;
+constexpr uint32_t SPEEDUP_TIMEOUT_MS = 10000;
 // While counting, give up if no cycle completes for this long (nothing is
 // moving, or the position sensor isn't working).
-constexpr uint32_t CYCLE_TIMEOUT_MS = 30000;
+constexpr uint32_t CYCLE_TIMEOUT_MS = 10000;
 
 void writeUint32BE(uint32_t v, uint8_t* out) {
     out[0] = (uint8_t)(v >> 24);
@@ -50,6 +50,7 @@ const char* faultName(FaultReason reason) {
         case FaultReason::DriveFault:       return "drive fault";
         case FaultReason::LoopTimingDrift:  return "loop timing";
         case FaultReason::CycleTimeout:     return "no cycles detected";
+        case FaultReason::ForceFailsafe:    return "excessive force detected";
         default:                            return "unknown";
     }
 }
@@ -144,6 +145,88 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
     // open item 4, deferred until drive behavior is characterized). Likely
     // still wants to push Points to dataBuffer_ during this so the
     // calibration run is visible on the PC side -- confirm.
+
+    if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
+        // Trigger failsafe
+        raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
+        return;
+    }
+
+    switch(calibPhase_){
+        case CalibrationPhase::BottomLoad:
+
+            sensor_force_avg[sensor_avg_count] = forceRaw;
+            sensor_avg_count += 1;
+
+            if (sensor_avg_count >= SENSOR_AVG_SIZE){
+                // finished with this state
+
+                // save result
+                uint64_t force_avg = 0;
+                for (int i = 0; i < sensor_avg_count; i++){
+                    force_avg += sensor_force_avg[i];
+                }
+                force_avg = force_avg / sensor_avg_count;
+                forceBot_ = force_avg;
+
+                // reset values
+                sensor_avg_count = 0;
+                sensor_pos_avg_i = 0;
+                sensor_force_avg_i = 0;
+                posMin_ = 8388608;
+                posMax_ = -8388608;
+
+                // Tell drive to start turning
+                // TODO: send drive command
+                calibPhase_ = CalibrationPhase::FindStroke;
+            }
+
+            
+            break;
+        case CalibrationPhase::FindStroke:
+            
+            sensor_pos_avg[sensor_pos_avg_i] = forceRaw;
+            sensor_pos_avg_i = (sensor_pos_avg_i + 1) % SENSOR_AVG_SIZE;
+            sensor_avg_count += 1;
+
+            if (sensor_avg_count >= SENSOR_AVG_SIZE){
+                uint64_t pos_avg = 0;
+                for (int i = 0; i < SENSOR_AVG_SIZE; i++){
+                    pos_avg += sensor_pos_avg[i];
+                }
+                pos_avg = pos_avg / SENSOR_AVG_SIZE;
+
+                if(pos_avg < posMin_) posMin_ = pos_avg;
+                if(pos_avg > posMax_) posMax_ = pos_avg;
+
+            }
+
+            if (sensor_avg_count > 2500){
+                stopDrive();
+                calibPhase_ = CalibrationPhase::CalibComplete;
+            }
+
+            break;
+
+        case CalibrationPhase::TopLoad:
+
+            break;
+
+        case CalibrationPhase::CalibComplete:
+
+            uint8_t payload[9];
+            //writeInt24BE(posMin, payload);
+            //writeInt24BE(posMax, payload + 3);
+            //writeInt24BE(forceAvg, payload + 6);
+            writeInt24BE(posMin_, payload);
+            writeInt24BE(posMax_, payload + 3);
+            writeInt24BE(forceBot_, payload + 6);
+            g_commsTask.enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
+            break;
+        default:
+            break;
+    }
+
     (void)positionRaw;
     (void)forceRaw;
     (void)timeMs;
@@ -152,6 +235,13 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
 void StateMachine::onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     // Point times (and the separator timestamps) count microseconds from the
     // first sample of the run, so they stay small and the GUI can compare them.
+
+    if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
+        // Trigger failsafe
+        raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
+        return;
+    }
+
     if (!runClockStarted_) {
         runStartUs_ = timeMs;
         runClockStarted_ = true;
@@ -323,7 +413,7 @@ void StateMachine::onPanic() {
 }
 
 void StateMachine::enterPanic(FaultReason reason) {
-    const bool wasOperating = (state_ == State::Operating);
+    const bool wasOperating = (state_ == State::Operating || state_ == State::Calibration);
     lastFault_ = reason;
     state_ = State::Panic;
     if (motor_) {
@@ -384,6 +474,7 @@ void StateMachine::handleInstruction(const Instruction& instr) {
                 const uint8_t count = instr.payloadSize >= 1 ? instr.payload[0] : 0;
                 if (count == 0 || count > MAX_SEQUENCE_STEPS) {
                     sendError("Run request refused: bad number of steps");
+                    sendCommand(Cmd::ESP_run_denied);
                     break;
                 }
                 // TODO: check the drive is ready before accepting.
@@ -394,6 +485,19 @@ void StateMachine::handleInstruction(const Instruction& instr) {
                 sendCommand(Cmd::ESP_run_accepted);
             }
             // TODO: reply with a rejection once one exists in the protocol.
+            break;
+        case Cmd::GUI_calibrate:
+            if (state_ == State::Armed){
+                // TODO: prep position calibration buffer
+                forceFailsafe_ = readInt24BE(instr.payload);
+
+                // reset values
+                sensor_avg_count = 0;
+                sensor_pos_avg_i = 0;
+                sensor_force_avg_i = 0;
+
+                state_ = State::Calibration;
+            }
             break;
         case Cmd::GUI_send_sequence:
             if (state_ == State::Armed) {

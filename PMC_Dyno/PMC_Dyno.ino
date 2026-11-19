@@ -309,11 +309,12 @@ void loop() {
     if (g_commsTask.popInstruction(instr)) {
         g_stateMachine.handleInstruction(instr);
 
+        if (instr.flag == Cmd::GUI_force_reboot){
+            // Forced reboot request from the GUI
+            esp_restart(); // full shutdown and reboot of the ESP32, now.
+        }
         // Debug commands that don't go through the state machine
-        if (instr.flag == Cmd::GUI_calibrate) {
-            handleCalibrateRequest();
-        } 
-        else if (instr.flag == Cmd::GUI_set_rpm) {
+        if (instr.flag == Cmd::GUI_set_rpm) {
             handleSetRpm(instr);
         }
         else if (instr.flag == Cmd::GUI_check_connection) {
