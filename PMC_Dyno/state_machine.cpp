@@ -177,7 +177,7 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
                 posMax_ = -8388608;
 
                 // Tell drive to start turning
-                // TODO: send drive command
+                // TODO: send drive command (to turn at 10Hz)
                 calibPhase_ = CalibrationPhase::FindStroke;
             }
 
@@ -201,7 +201,7 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
 
             }
 
-            if (sensor_avg_count > 2500){
+            if (sensor_avg_count > 2500){ // 2500 tics, should be about 5sec
                 stopDrive();
                 calibPhase_ = CalibrationPhase::CalibComplete;
             }
@@ -213,6 +213,7 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
             break;
 
         case CalibrationPhase::CalibComplete:
+            setPositionRange(posMin_, posMax_);
 
             uint8_t payload[9];
             //writeInt24BE(posMin, payload);
@@ -221,7 +222,13 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
             writeInt24BE(posMin_, payload);
             writeInt24BE(posMax_, payload + 3);
             writeInt24BE(forceBot_, payload + 6);
-            g_commsTask.enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
+            if (comms_){
+                comms_->enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
+            }
+            
+
+            // return to armed state and wait for start signal
+            state_ = State::Armed;
             break;
         default:
             break;
@@ -497,6 +504,8 @@ void StateMachine::handleInstruction(const Instruction& instr) {
                 sensor_force_avg_i = 0;
 
                 state_ = State::Calibration;
+            } else {
+                sendError("Calibration denied machine not armed");
             }
             break;
         case Cmd::GUI_send_sequence:
