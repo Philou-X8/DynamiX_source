@@ -14,6 +14,7 @@ enum class State : uint8_t {
     Armed, // after getting a run request and making sure the drive is ready, wait here for the speed configurations
     Calibration,
     Operating,
+    Tar
 };
 
 // Reasons the state machine can enter Panic, matching design doc section 7.
@@ -91,6 +92,7 @@ private:
     };
 
     void onIdle();
+    void onTar(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
     void onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
     void onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
     void onPanic();
@@ -101,6 +103,9 @@ private:
     // Queue a payload-less command (flag only) for the GUI. Returns false
     // if comms isn't wired up or the priority queue is full.
     bool sendCommand(uint8_t flag);
+
+    // Queue an ESP_message with a text message for the GUI log.
+    void sendMessage(const char* text);
 
     // Queue an ESP_error with a text message for the GUI log.
     void sendError(const char* text);
@@ -163,6 +168,8 @@ private:
     int32_t posMax_ = 0;
     int32_t forceBot_ = 0;
     int32_t forceTop_ = 0;
+
+    bool tarReady = false;
 
     int32_t forceFailsafe_ = 0;
 

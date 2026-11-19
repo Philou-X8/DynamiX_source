@@ -110,6 +110,12 @@ bool StateMachine::sendCommand(uint8_t flag) {
     return comms_->enqueuePriorityMessage(flag, nullptr, 0);
 }
 
+void StateMachine::sendMessage(const char* text) {
+    if (comms_) {
+        comms_->enqueuePriorityMessage(Cmd::ESP_message, (const uint8_t*)text, strlen(text));
+    }
+}
+
 void StateMachine::sendError(const char* text) {
     if (comms_) {
         comms_->enqueuePriorityMessage(Cmd::ESP_error, (const uint8_t*)text, strlen(text));
@@ -120,6 +126,9 @@ void StateMachine::update(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs
     switch (state_) {
         case State::Idle:
             onIdle();
+            break;
+        case State::Tar:
+            onTar(positionRaw, forceRaw, timeMs);
             break;
         case State::Armed:
             // Accepted a run request, waiting for the sequence and GUI_run_start.
@@ -142,6 +151,53 @@ void StateMachine::onIdle() {
     // via handleInstruction) for "start calibration" / "start test".
 }
 
+void StateMachine::onTar(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs){
+    
+    sensor_force_avg[sensor_force_avg_i] = forceRaw;
+    sensor_force_avg_i = (sensor_force_avg_i + 1) % SENSOR_AVG_SIZE;
+    sensor_pos_avg[sensor_pos_avg_i] = positionRaw;
+    sensor_pos_avg_i = (sensor_pos_avg_i + 1) % 32; // limit position buffer (to 32 currently)
+    sensor_avg_count += 1;
+
+    uint64_t force_avg = 0;
+    for (int i = 0; i < SENSOR_AVG_SIZE; i++){
+        force_avg += sensor_force_avg[i];
+    }
+    force_avg = force_avg / SENSOR_AVG_SIZE;
+    uint64_t pos_avg = 0;
+    for (int i = 0; i < 32; i++){ // limit position buffer (to 32 currently)
+        pos_avg += sensor_pos_avg[i];
+    }
+    pos_avg = pos_avg / 32;
+
+    if(pos_avg < posMin_) posMin_ = pos_avg;
+    if(pos_avg > posMax_) posMax_ = pos_avg;
+
+    if (sensor_avg_count > 5000){ // about 10s of running
+        int strokeRange = posMax_ - posMin_;
+        if ( pos_avg > (strokeRange * 0.8 + posMin_) ){
+            tarReady = true;
+
+            stopDrive();
+
+            uint8_t payload[9];
+            //writeInt24BE(posMin, payload);
+            //writeInt24BE(posMax, payload + 3);
+            //writeInt24BE(forceAvg, payload + 6);
+            writeInt24BE(posMin_, payload);
+            writeInt24BE(posMax_, payload + 3);
+            writeInt24BE(forceBot_, payload + 6);
+            if (comms_){
+                comms_->enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
+            }
+
+            state_ = State::Idle;
+        }
+
+    }
+}
+
+
 void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     // TODO: seek -> slow approach -> stop-near-bottom sequence (design doc
     // open item 4, deferred until drive behavior is characterized). Likely
@@ -150,8 +206,8 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
 
     if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
         // Trigger failsafe
-        raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
-        return;
+        //raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
+        //return;
     }
 
     switch(calibPhase_){
@@ -175,11 +231,16 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
                 sensor_avg_count = 0;
                 sensor_pos_avg_i = 0;
                 sensor_force_avg_i = 0;
-                posMin_ = 8388608;
-                posMax_ = -8388608;
+                posMin_ = 8388600;
+                //posMax_ = -8388600;
+                //posMax_ = -100000;
+                posMax_ = 0;
 
                 // Tell drive to turn at 10 Hz
                 if (!sendDriveFrame(DRIVE_SPEED_10HZ_FRAME, sizeof(DRIVE_SPEED_10HZ_FRAME))) {
+                    sendError("Drive command not sent");
+                }
+                if (!sendDriveFrame(DRIVE_START_FRAME, sizeof(DRIVE_START_FRAME))) {
                     sendError("Drive command not sent");
                 }
                 calibPhase_ = CalibrationPhase::FindStroke;
@@ -249,8 +310,8 @@ void StateMachine::onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t t
 
     if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
         // Trigger failsafe
-        raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
-        return;
+        //raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
+        //return;
     }
 
     if (!runClockStarted_) {
@@ -478,6 +539,23 @@ void StateMachine::handleInstruction(const Instruction& instr) {
             // Sent on initial connect. Reset to a known-safe state, then pong.
             enterIdle();
             sendCommand(Cmd::ESP_good_connection);
+            break;
+        case Cmd::GUI_TAR_request:
+            if (state_ == State::Idle){
+                sensor_avg_count = 0;
+                sensor_pos_avg_i = 0;
+                sensor_force_avg_i = 0;
+
+                tarReady = false;
+                
+                posMin_ = 8388600;
+                //posMax_ = -8388600;
+                posMax_ = -100000;
+                //posMax_ = 0;
+
+                state_ = State::Tar;
+                sendMessage("Machine TAR in process");
+            }
             break;
         case Cmd::GUI_run_request:
             if (state_ == State::Idle) {
