@@ -20,6 +20,8 @@ const uint8_t DRIVE_START_FRAME[] = {0x03, 0x06, 0x20, 0x00, 0x00, 0x01, 0x42, 0
 // bit makes the write go to the drive's RAM only, so it isn't saved to EEPROM
 // (TD350 manual 9.4.5.1).
 const uint8_t DRIVE_SPEED_ZERO_FRAME[] = {0x03, 0x06, 0x80, 0x0A, 0x00, 0x00, 0x81, 0xEA};
+// Speed 10 Hz: same register, value 1000 (0x03E8) in 0.01 Hz units.
+const uint8_t DRIVE_SPEED_10HZ_FRAME[] = {0x03, 0x06, 0x80, 0x0A, 0x03, 0xE8, 0x81, 0x54};
 
 // Waiting for the drive to reach a step's frequency: it is asked for its
 // running frequency (register 0x3000) this often, and the step starts counting
@@ -176,8 +178,10 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
                 posMin_ = 8388608;
                 posMax_ = -8388608;
 
-                // Tell drive to start turning
-                // TODO: send drive command
+                // Tell drive to turn at 10 Hz
+                if (!sendDriveFrame(DRIVE_SPEED_10HZ_FRAME, sizeof(DRIVE_SPEED_10HZ_FRAME))) {
+                    sendError("Drive command not sent");
+                }
                 calibPhase_ = CalibrationPhase::FindStroke;
             }
 
