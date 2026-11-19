@@ -185,7 +185,7 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
             break;
         case CalibrationPhase::FindStroke:
             
-            sensor_pos_avg[sensor_pos_avg_i] = forceRaw;
+            sensor_pos_avg[sensor_pos_avg_i] = positionRaw;
             sensor_pos_avg_i = (sensor_pos_avg_i + 1) % SENSOR_AVG_SIZE;
             sensor_avg_count += 1;
 
@@ -226,7 +226,7 @@ void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t
                 comms_->enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
             }
             
-
+            calibPhase_ = CalibrationPhase::Idle;
             // return to armed state and wait for start signal
             state_ = State::Armed;
             break;
@@ -504,6 +504,7 @@ void StateMachine::handleInstruction(const Instruction& instr) {
                 sensor_force_avg_i = 0;
 
                 state_ = State::Calibration;
+                calibPhase_ = CalibrationPhase::BottomLoad;
             } else {
                 sendError("Calibration denied machine not armed");
             }

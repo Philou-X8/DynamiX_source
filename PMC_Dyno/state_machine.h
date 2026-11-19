@@ -86,7 +86,8 @@ private:
         BottomLoad, // dyno not moving yet, calibrate bottom
         FindStroke, // do a few cycles to find the min/max pos
         TopLoad,    // try to stop at the top to measure the force
-        CalibComplete // finished, wrap things up
+        CalibComplete, // finished, wrap things up
+        Idle // safety net
     };
 
     void onIdle();
