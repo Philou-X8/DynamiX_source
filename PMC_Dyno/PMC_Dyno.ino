@@ -343,7 +343,7 @@ void loop() {
         sharedSensorDataRead(g_positionSensor, posRaw, posSeq);
         sharedSensorDataRead(g_forceSensor, forceRaw, forceSeq);
 
-        updateRollingAverages(posRaw, forceRaw);
+        // updateRollingAverages(posRaw, forceRaw); // Outdated
 
         // TODO: track posSeq/forceSeq across iterations; if either hasn't
         // incremented in N iterations, call
@@ -357,7 +357,7 @@ void loop() {
 
 
         // the run counts cycles against the position range seen so far
-        g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max);
+        //g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max); // Outdated
         g_stateMachine.update(posRaw, forceRaw, loop_time);
 
         // TODO: measure actual loop iteration time here and compare against
