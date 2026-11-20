@@ -636,8 +636,8 @@ void StateMachine::prepareDrive() {
     }
 }
 
-// The drive's ready relay, debounced: LOW for SAFETY_TRIP_MS opens the
-// circuit (Panic), HIGH for SAFETY_CLEAR_MS closes it. A Panic caused by the
+// The drive's ready relay, debounced: open for SAFETY_TRIP_MS opens the
+// circuit (Panic), closed for SAFETY_CLEAR_MS closes it. A Panic caused by the
 // circuit clears when it closes: the reset button is the acknowledgement.
 void StateMachine::onSafetyInput(bool ready, uint32_t nowMs) {
     if (ready != safetyRaw_) {

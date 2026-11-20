@@ -18,8 +18,8 @@ class PointBuffer;
 //        --GUI_send_sequence x N, GUI_run_start--> Operating --last step--> Idle
 //   Idle --GUI_TAR_request / GUI_bottom_out--> Tar --done--> Idle
 //   any motion state --fault--> Panic --GUI_abort--> Idle
-//   any state --safety circuit open (pin DRIVE_READY LOW)--> Panic
-//        --reset button on the machine (pin HIGH again)--> Idle
+//   any state --safety circuit open (pin DRIVE_READY not at DRIVE_READY_LEVEL)--> Panic
+//        --reset button on the machine (relay closed again)--> Idle
 //   any state --GUI_abort / GUI_check_connection--> Idle (motor stopped),
 //        except Panic while the safety circuit is open
 enum class State : uint8_t {
@@ -61,7 +61,7 @@ public:
     void tick(uint32_t nowMs);                                  // timeouts, stall detection, live data
 
     // Called every main loop iteration with the drive's ready relay (pin
-    // DRIVE_READY): true = HIGH = safety circuit closed, drive ready.
+    // DRIVE_READY): true = pin at DRIVE_READY_LEVEL = safety circuit closed, drive ready.
     void onSafetyInput(bool ready, uint32_t nowMs);
 
     // Turns on the drive's RS-485 timeout. Called at boot (after the stop)

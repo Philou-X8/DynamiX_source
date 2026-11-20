@@ -90,7 +90,7 @@ void loop() {
 
     g_stateMachine.pollDrive();
     // Before the commands, so a run request sees an opened circuit.
-    g_stateMachine.onSafetyInput(digitalRead(Pins::DRIVE_READY) == HIGH, nowMs);
+    g_stateMachine.onSafetyInput(digitalRead(Pins::DRIVE_READY) == Pins::DRIVE_READY_LEVEL, nowMs);
 
     Command command;
     while (g_gui.popCommand(command)) {

@@ -1,6 +1,15 @@
 #pragma once
 #include <stdint.h>
 
+// Arduino's pin levels (esp32-hal-gpio.h, same values), so this file also
+// compiles in the host tests.
+#ifndef LOW
+#define LOW 0x0
+#endif
+#ifndef HIGH
+#define HIGH 0x1
+#endif
+
 // Everything that is wired or tuned lives here: pins, link speeds, ADC
 // settings, and the numbers the state machine works with. Values marked TUNE
 // still need to be checked on the machine.
@@ -37,11 +46,15 @@ constexpr int8_t UNUSED_ADC_SYNC  = 22;
 constexpr int8_t DRIVE_RX    = 16; // RO
 constexpr int8_t DRIVE_TX    = 17; // DI
 constexpr int8_t DRIVE_DE_RE = 4;  // driver enable / receiver enable
-// Drive relay "ready to run" (P06 = 12): HIGH when the safety circuit is closed
-// and the drive has no fault. Goes LOW on the e-stop, the door, STO (40), a
-// drive fault, or the RS-485 timeout (CE, 18). Input-only pin, no internal
-// pull resistor: the wiring must pull it LOW when the relay is open.
+// Drive relay "ready to run" (P06.03/P06.04 = 12, contact A-C): closed when
+// the safety circuit is closed and the drive has no fault. Opens on the e-stop,
+// the door, STO (40), a drive fault, or the RS-485 timeout (CE, 18).
+// Input-only pin, no internal pull resistor: the wiring sets the levels.
 constexpr int8_t DRIVE_READY = 35;
+// Level of DRIVE_READY when the drive is ready (relay closed). The board pulls
+// the pin up and the closed relay shorts it to GND -> LOW = ready, and a cut
+// wire reads HIGH = not ready (fails safe).
+constexpr uint8_t DRIVE_READY_LEVEL = LOW; // HIGH or LOW
 
 } // namespace Pins
 
@@ -114,9 +127,9 @@ constexpr uint32_t SENSOR_STALL_MS = 100;
 
 // --- Safety circuit (Pins::DRIVE_READY) --------------------------------------------
 // Only the yellow reset button on the machine re-arms the drive: the ESP never
-// sends a fault reset. LOW this long -> Panic (filters a relay glitch).
+// sends a fault reset. Relay open this long -> Panic (filters a relay glitch).
 constexpr uint32_t SAFETY_TRIP_MS = 10;
-// HIGH this long after the reset button -> a Panic caused by the safety
+// Relay closed this long after the reset button -> a Panic caused by the safety
 // circuit clears by itself (relay bounce, and the drive settling).
 constexpr uint32_t SAFETY_CLEAR_MS = 200;
 
