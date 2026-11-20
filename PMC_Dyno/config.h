@@ -129,7 +129,7 @@ constexpr uint32_t TAR_EMPTY_LOAD_SAMPLES = 500;  // empty load averaged over ~1
 constexpr uint16_t TAR_CENTIHZ = 500;             // TUNE: 5 Hz, slow so the stop lands close to the target
 // Which end of the stroke is the bottom: true if the LVIT reads its highest
 // value at the bottom. TUNE: check the direction on the machine.
-constexpr bool BOTTOM_AT_HIGH_POSITION = true;
+constexpr bool BOTTOM_AT_HIGH_POSITION = false;
 // TUNE: the stop command is sent when the yoke, moving towards the bottom,
 // passes this point (in 0.1 % of the stroke, 1000 = bottom). The motor still
 // turns a little while it decelerates; the TAR report gives where it really
