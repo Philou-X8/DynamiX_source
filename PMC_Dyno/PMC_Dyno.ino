@@ -74,7 +74,8 @@ void setup() {
 
     g_sensors.begin(&g_gui, TASK_CORE, SENSOR_TASK_PRIORITY);
     g_stateMachine.begin(&g_gui, &g_drive, &g_points);
-    g_stateMachine.prepareDrive(); // RS-485 timeout on, clear the CE our own restart may have caused
+    g_stateMachine.prepareDrive(); // RS-485 timeout on
+    pinMode(Pins::DRIVE_READY, INPUT); // input-only pin, pulled by the wiring
     g_lastWake = xTaskGetTickCount();
 }
 
@@ -88,6 +89,8 @@ void loop() {
     const uint32_t nowMs = millis();
 
     g_stateMachine.pollDrive();
+    // Before the commands, so a run request sees an opened circuit.
+    g_stateMachine.onSafetyInput(digitalRead(Pins::DRIVE_READY) == HIGH, nowMs);
 
     Command command;
     while (g_gui.popCommand(command)) {

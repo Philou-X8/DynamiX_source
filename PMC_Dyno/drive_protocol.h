@@ -20,7 +20,7 @@ constexpr uint16_t DRIVE_REG_SET_FREQUENCY_RAM = 0x800A; // same, written to RAM
 constexpr uint16_t DRIVE_REG_CONTROL = 0x2000;           // control command
 constexpr uint16_t DRIVE_CONTROL_FORWARD = 0x0001;       //   forward running
 constexpr uint16_t DRIVE_CONTROL_STOP = 0x0005;          //   stop (decelerates, P00.12)
-constexpr uint16_t DRIVE_CONTROL_FAULT_RESET = 0x0007;   //   fault reset
+// (0x0007 fault reset: never sent. Only the machine's reset button re-arms the drive.)
 constexpr uint16_t DRIVE_REG_RUNNING_FREQUENCY = 0x3000; // read only, unit 0.01 Hz
 constexpr uint16_t DRIVE_REG_COMM_TIMEOUT_RAM = 0x8E04;  // P14.04 in RAM, unit 0.1 s (0 = off)
 

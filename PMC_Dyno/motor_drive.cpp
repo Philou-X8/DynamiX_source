@@ -73,10 +73,6 @@ bool MotorDrive::queryRunningFrequency() {
     return send(frame, sizeof(frame));
 }
 
-bool MotorDrive::resetFault() {
-    return write(DRIVE_REG_CONTROL, DRIVE_CONTROL_FAULT_RESET);
-}
-
 bool MotorDrive::setCommTimeout(uint16_t deciseconds) {
     return write(DRIVE_REG_COMM_TIMEOUT_RAM, deciseconds);
 }

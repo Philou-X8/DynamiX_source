@@ -37,6 +37,11 @@ constexpr int8_t UNUSED_ADC_SYNC  = 22;
 constexpr int8_t DRIVE_RX    = 16; // RO
 constexpr int8_t DRIVE_TX    = 17; // DI
 constexpr int8_t DRIVE_DE_RE = 4;  // driver enable / receiver enable
+// Drive relay "ready to run" (P06 = 12): HIGH when the safety circuit is closed
+// and the drive has no fault. Goes LOW on the e-stop, the door, STO (40), a
+// drive fault, or the RS-485 timeout (CE, 18). Input-only pin, no internal
+// pull resistor: the wiring must pull it LOW when the relay is open.
+constexpr int8_t DRIVE_READY = 35;
 
 } // namespace Pins
 
@@ -55,7 +60,9 @@ constexpr uint32_t LOOP_PERIOD_MS = 2;
 //   - a keep-alive to the drive whenever nothing else was sent to it for this
 //     long. The drive's RS-485 timeout (P14.04) is set just above it, so if
 //     the main loop or the cable dies the drive faults (CE) and coasts to a
-//     stop (P14.05 = 0).
+//     stop (P14.05 = 0). Like any drive fault, only the reset button on the
+//     machine clears it. GUI_force_reboot turns the timeout off first, so a
+//     requested reboot doesn't leave the drive in CE.
 constexpr uint32_t HEARTBEAT_PERIOD_MS = 200;
 // P14.04, in 0.1 s: the heartbeat period plus up to 100 ms of slack (the drive
 // link spaces frames 100 ms apart), rounded up -> 0.3 s for 200 ms. A single
@@ -104,6 +111,14 @@ constexpr int32_t ADC_RAIL_MARGIN = 16;
 
 // No new sensor sample for this long while the motor is driven -> Panic.
 constexpr uint32_t SENSOR_STALL_MS = 100;
+
+// --- Safety circuit (Pins::DRIVE_READY) --------------------------------------------
+// Only the yellow reset button on the machine re-arms the drive: the ESP never
+// sends a fault reset. LOW this long -> Panic (filters a relay glitch).
+constexpr uint32_t SAFETY_TRIP_MS = 10;
+// HIGH this long after the reset button -> a Panic caused by the safety
+// circuit clears by itself (relay bounce, and the drive settling).
+constexpr uint32_t SAFETY_CLEAR_MS = 200;
 
 // --- Motor drive -------------------------------------------------------------------
 // While waiting for a speed, the drive is asked for its running frequency this

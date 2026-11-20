@@ -18,10 +18,14 @@ class PointBuffer;
 //        --GUI_send_sequence x N, GUI_run_start--> Operating --last step--> Idle
 //   Idle --GUI_TAR_request / GUI_bottom_out--> Tar --done--> Idle
 //   any motion state --fault--> Panic --GUI_abort--> Idle
-//   any state --GUI_abort / GUI_check_connection--> Idle (motor stopped)
+//   any state --safety circuit open (pin DRIVE_READY LOW)--> Panic
+//        --reset button on the machine (pin HIGH again)--> Idle
+//   any state --GUI_abort / GUI_check_connection--> Idle (motor stopped),
+//        except Panic while the safety circuit is open
 enum class State : uint8_t {
     Idle,        // motor stopped, nothing measured
-    Panic,       // a fault stopped the motor; stays here until GUI_abort
+    Panic,       // a fault stopped the motor. Left by the machine's reset button for a
+                 // safety circuit fault, by GUI_abort for the others (circuit closed)
     Armed,       // run accepted, waiting for the calibration, the sequence and the start
     Calibration, // run calibration: force at rest, then the stroke at a slow speed
     Operating,   // running the sequence and streaming points
@@ -35,6 +39,7 @@ enum class FaultReason : uint8_t {
     CycleTimeout,     // the motor turns but the position doesn't cycle
     ForceFailsafe,    // the load cell reads over the limit
     StrokeNotFound,   // calibration / TAR couldn't find the stroke
+    SafetyCircuit,    // the drive's ready relay opened: e-stop, door, or a drive fault
 };
 
 // Most steps a run can have; a longer run request is refused.
@@ -55,8 +60,12 @@ public:
     void onSample(const SensorSample& sample, uint32_t nowMs);  // the new sensor pair, if there is one
     void tick(uint32_t nowMs);                                  // timeouts, stall detection, live data
 
-    // Drive RS-485 timeout and fault reset. Called at boot (after the stop)
-    // and when the GUI connects.
+    // Called every main loop iteration with the drive's ready relay (pin
+    // DRIVE_READY): true = HIGH = safety circuit closed, drive ready.
+    void onSafetyInput(bool ready, uint32_t nowMs);
+
+    // Turns on the drive's RS-485 timeout. Called at boot (after the stop)
+    // and when the GUI connects. Never resets a drive fault.
     void prepareDrive();
 
     State state() const { return state_; }
@@ -112,6 +121,8 @@ private:
     void stopMotor();
     void goIdle();
     void abort();
+    void leavePanic();
+    bool refuseIfSafetyOpen(const char* what);
     void enterMotionState(State state, uint32_t nowMs);
     void denyRun(const char* fmt, ...) PRINTF_FORMAT(2, 3);
     void enterPanic(FaultReason reason, const char* fmt = nullptr, ...) PRINTF_FORMAT(3, 4);
@@ -133,6 +144,14 @@ private:
 
     State state_ = State::Idle;
     bool rebootRequested_ = false;
+
+    // --- Safety circuit
+    enum class Safety : uint8_t { Unknown, Open, Closed };
+    Safety safety_ = Safety::Unknown;  // debounced
+    bool safetyRaw_ = false;
+    uint32_t safetyRawSinceMs_ = 0;
+    FaultReason panicReason_ = FaultReason::SafetyCircuit;
+    bool panicNeedsGui_ = false;       // a software fault: GUI_abort acknowledges it
     uint32_t lastLiveDataMs_ = 0;
 
     // --- Sensors (every new sample)

@@ -279,6 +279,7 @@ struct Sim {
     uint32_t nowMs = 1000;
     uint32_t sequence = 0;
     bool sensorsOn = true;
+    bool safetyReady = true; // the drive's ready relay (pin DRIVE_READY)
     std::function<void(SensorSample&)> sampleHook;
     // plant revolutions at each sample's run-relative time, to check the sections
     std::vector<std::pair<uint32_t, double>> revolutionsAt;
@@ -288,6 +289,7 @@ struct Sim {
         g_onDriveFrame = [this](const uint8_t* f, size_t n, bool u) { m.onFrame(f, n, u); };
         drive.begin(&link);
         sm.begin(&gui, &drive, &points);
+        run(Config::SAFETY_CLEAR_MS + 10); // the ready relay is read as closed from here
     }
     Sim(const Sim&) = delete;
 
@@ -303,6 +305,7 @@ struct Sim {
         nowMs += 2;
         m.step(0.002);
         sm.pollDrive();
+        sm.onSafetyInput(safetyReady, nowMs);
         if (sensorsOn) {
             SensorSample s{m.position(), m.force(), nowMs * 1000u, ++sequence};
             if (sampleHook) sampleHook(s);
@@ -336,6 +339,13 @@ struct Sim {
         for (auto it = g_guiEvents.rbegin(); it != g_guiEvents.rend(); ++it)
             if (it->kind == GuiEvent::Command && it->flag == flag) return &*it;
         return nullptr;
+    }
+    // A write of 'value' to 'reg' reached the drive.
+    bool wrote(uint16_t reg, uint16_t value) const {
+        for (const auto& f : m.framesReceived)
+            if (f[1] == MODBUS_WRITE_REGISTER && readUint16BE(&f[2]) == reg && readUint16BE(&f[4]) == value)
+                return true;
+        return false;
     }
     bool anyText(uint8_t flag, const char* contains) const {
         for (const auto& e : g_guiEvents)
@@ -558,8 +568,11 @@ TEST(drive_that_never_answers_is_assumed_at_speed) {
 
 TEST(run_requests_that_are_refused) {
     Sim sim;
-    sim.command(Cmd::GUI_run_request, {1}); // no sensor data yet
+    sim.sensorsOn = false;
+    sim.run(200);
+    sim.command(Cmd::GUI_run_request, {1}); // no sensor data
     CHECK(sim.count(Cmd::ESP_run_denied) == 1);
+    sim.sensorsOn = true;
     sim.run(100);
     sim.command(Cmd::GUI_run_request, {0});
     sim.command(Cmd::GUI_run_request, {(uint8_t)(MAX_SEQUENCE_STEPS + 1)});
@@ -616,12 +629,7 @@ TEST(abort_stops_everything) {
     sim->command(Cmd::GUI_abort);
     CHECK(sim->sm.state() == State::Idle);
     CHECK(!sim->m.running);
-    // the points so far still go out, then the fault reset that comes with a stop
-    CHECK(std::any_of(g_guiEvents.end() - 3, g_guiEvents.end(),
-                      [](const GuiEvent& e) { return e.kind == GuiEvent::Flush; }));
-    CHECK(sim->m.framesReceived.back()[1] == MODBUS_WRITE_REGISTER &&
-          readUint16BE(&sim->m.framesReceived.back()[2]) == DRIVE_REG_CONTROL &&
-          readUint16BE(&sim->m.framesReceived.back()[4]) == DRIVE_CONTROL_FAULT_RESET);
+    CHECK(g_guiEvents.back().kind == GuiEvent::Flush); // the points so far still go out
 }
 
 TEST(bottom_out_only) {
@@ -645,9 +653,11 @@ static std::vector<int32_t> liveValues(const GuiEvent& e) {
 TEST(live_data_every_heartbeat_with_zeros_when_unknown) {
     Sim sim;
     sim.sensorsOn = false;
+    sim.run(200); // sensors stale
+    const int first = sim.count(Cmd::ESP_live_data);
     sim.run(1000);
     // every 200 ms, whatever the sensors do
-    CHECK(std::abs(sim.count(Cmd::ESP_live_data) - 5) <= 1);
+    CHECK(std::abs(sim.count(Cmd::ESP_live_data) - first - 5) <= 1);
     const GuiEvent* e = sim.last(Cmd::ESP_live_data);
     CHECK(e != nullptr && e->payload.size() == 15);
     if (e) CHECK(liveValues(*e) == std::vector<int32_t>({0, 0, 0, 0, 0}));
@@ -685,9 +695,10 @@ TEST(live_data_carries_the_stroke_after_a_tar) {
 
 TEST(drive_keep_alive_only_when_the_link_is_quiet) {
     Sim sim;
+    const int first = sim.m.queries;
     sim.run(2000);
     // idle: nothing else goes to the drive, one keep-alive read per heartbeat
-    CHECK(std::abs(sim.m.queries - 10) <= 1);
+    CHECK(std::abs(sim.m.queries - first - 10) <= 1);
     for (const auto& f : sim.m.framesReceived) CHECK(f[1] != 0x08); // the drive refuses 08H
     // while speeding up, the speed queries are enough: no extra keep-alive
     auto sim2 = tarredSim();
@@ -705,20 +716,101 @@ TEST(drive_keep_alive_only_when_the_link_is_quiet) {
 TEST(drive_setup_on_connect) {
     Sim sim;
     sim.command(Cmd::GUI_check_connection);
-    bool timeoutSet = false;
-    bool faultReset = false;
-    for (const auto& f : sim.m.framesReceived) {
-        const uint16_t reg = readUint16BE(&f[2]);
-        const uint16_t value = readUint16BE(&f[4]);
-        timeoutSet |= f[1] == MODBUS_WRITE_REGISTER && reg == DRIVE_REG_COMM_TIMEOUT_RAM &&
-                      value == Config::DRIVE_COMM_TIMEOUT_DECISECONDS;
-        faultReset |= f[1] == MODBUS_WRITE_REGISTER && reg == DRIVE_REG_CONTROL &&
-                      value == DRIVE_CONTROL_FAULT_RESET;
-    }
-    CHECK(timeoutSet);
-    CHECK(faultReset);
+    CHECK(sim.wrote(DRIVE_REG_COMM_TIMEOUT_RAM, Config::DRIVE_COMM_TIMEOUT_DECISECONDS));
+    CHECK(!sim.wrote(DRIVE_REG_CONTROL, 0x0007)); // never a fault reset
     CHECK(Config::DRIVE_COMM_TIMEOUT_DECISECONDS == 3);
     CHECK(sim.count(Cmd::ESP_good_connection) == 1);
+}
+
+TEST(estop_during_a_run_and_the_reset_button) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 20}});
+    sim->run(2000);
+    CHECK(sim->m.running);
+    // a 4 ms glitch on the relay does nothing
+    sim->safetyReady = false;
+    sim->run(4);
+    sim->safetyReady = true;
+    sim->run(100);
+    CHECK(sim->sm.state() == State::Operating);
+    // e-stop
+    sim->safetyReady = false;
+    sim->run(20);
+    CHECK(sim->sm.state() == State::Panic);
+    CHECK(!sim->m.running);
+    CHECK(sim->count(Cmd::ESP_emergency) == 1);
+    CHECK(sim->anyText(Cmd::ESP_error, "PANIC: safety circuit open"));
+    // the GUI can't clear it, neither by Stop nor by reconnecting
+    sim->command(Cmd::GUI_abort);
+    CHECK(sim->sm.state() == State::Panic);
+    sim->command(Cmd::GUI_check_connection);
+    CHECK(sim->sm.state() == State::Panic);
+    CHECK(sim->count(Cmd::ESP_emergency) == 2); // told again to the new GUI
+    CHECK(sim->count(Cmd::ESP_emergency_clear) == 0);
+    sim->command(Cmd::GUI_run_request, {1});
+    CHECK(sim->count(Cmd::ESP_run_denied) >= 1);
+    sim->run(5000);
+    CHECK(sim->sm.state() == State::Panic);
+    // reset button: the relay closes, the panic clears by itself
+    sim->safetyReady = true;
+    sim->run(Config::SAFETY_CLEAR_MS - 20);
+    CHECK(sim->sm.state() == State::Panic);
+    sim->run(40);
+    CHECK(sim->sm.state() == State::Idle);
+    CHECK(sim->count(Cmd::ESP_emergency_clear) == 1);
+    CHECK(!sim->wrote(DRIVE_REG_CONTROL, 0x0007)); // never a fault reset
+}
+
+TEST(software_panic_needs_the_gui_and_a_closed_circuit) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 20}});
+    sim->run(2000);
+    sim->sensorsOn = false; // sensor stall
+    sim->run(200);
+    sim->sensorsOn = true;
+    CHECK(sim->sm.state() == State::Panic);
+    sim->run(2000); // the relay never opened: stays in panic until the GUI says so
+    CHECK(sim->sm.state() == State::Panic);
+    sim->command(Cmd::GUI_abort);
+    CHECK(sim->sm.state() == State::Idle);
+    CHECK(sim->count(Cmd::ESP_emergency_clear) == 1);
+
+    // panic, then the e-stop as well: the reset button acknowledges both
+    sim->startRun({{10.0, 20}});
+    sim->run(2000);
+    sim->sensorsOn = false;
+    sim->run(200);
+    sim->sensorsOn = true;
+    CHECK(sim->sm.state() == State::Panic);
+    sim->safetyReady = false;
+    sim->run(100);
+    sim->safetyReady = true;
+    sim->run(Config::SAFETY_CLEAR_MS + 20);
+    CHECK(sim->sm.state() == State::Idle);
+    CHECK(sim->count(Cmd::ESP_emergency_clear) == 2);
+}
+
+TEST(boot_with_the_circuit_open) {
+    Sim sim;
+    sim.safetyReady = false;
+    sim.run(50);
+    CHECK(sim.sm.state() == State::Panic);
+    CHECK(!sim.m.running);
+    sim.command(Cmd::GUI_TAR_request);
+    CHECK(sim.sm.state() == State::Panic);
+    sim.safetyReady = true;
+    sim.run(Config::SAFETY_CLEAR_MS + 20);
+    CHECK(sim.sm.state() == State::Idle);
+    sim.command(Cmd::GUI_TAR_request);
+    CHECK(sim.sm.state() == State::Tar);
+}
+
+TEST(reboot_turns_the_drive_timeout_off) {
+    Sim sim;
+    sim.command(Cmd::GUI_force_reboot);
+    CHECK(sim.sm.rebootRequested());
+    CHECK(sim.wrote(DRIVE_REG_COMM_TIMEOUT_RAM, 0));
+    CHECK(!sim.m.running);
 }
 
 TEST(debug_buttons_in_idle) {

@@ -24,8 +24,6 @@ public:
     bool sendFrame(const uint8_t* frame, size_t length);
     // Asks for the running frequency; the answer arrives later (see below).
     bool queryRunningFrequency();
-    // Clears a drive fault (e.g. the CE fault left by a heartbeat timeout).
-    bool resetFault();
     // Sets the drive's RS-485 timeout (P14.04, RAM only, 0.1 s; 0 = off).
     bool setCommTimeout(uint16_t deciseconds);
 

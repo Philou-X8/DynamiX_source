@@ -21,6 +21,7 @@ const char* faultName(FaultReason reason) {
         case FaultReason::CycleTimeout:     return "no cycles detected";
         case FaultReason::ForceFailsafe:    return "excessive force";
         case FaultReason::StrokeNotFound:   return "stroke not found";
+        case FaultReason::SafetyCircuit:    return "safety circuit open";
     }
     return "unknown";
 }
@@ -77,6 +78,11 @@ void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
             // since the boot, and the timeout is only written to its RAM.
             prepareDrive();
             gui_->send(Cmd::ESP_good_connection);
+            if (state_ == State::Panic) { // tell the new GUI why nothing works
+                report(Cmd::ESP_error, "PANIC: %s (press the reset button on the machine)",
+                       faultName(panicReason_));
+                gui_->send(Cmd::ESP_emergency);
+            }
             break;
         case Cmd::GUI_abort:
             abort();
@@ -162,6 +168,10 @@ void StateMachine::onRunRequest(const Command& command, uint32_t nowMs) {
         denyRun("Run refused: the machine is %s", stateName(state_));
         return;
     }
+    if (safety_ != Safety::Closed) {
+        denyRun("Run refused: safety circuit open (press the reset button on the machine)");
+        return;
+    }
     const unsigned count = command.payloadSize >= 1 ? command.payload[0] : 0;
     if (count == 0 || count > MAX_SEQUENCE_STEPS) {
         denyRun("Run refused: %u steps (1 to %u allowed)", count, (unsigned)MAX_SEQUENCE_STEPS);
@@ -243,6 +253,9 @@ void StateMachine::onTarRequest(bool measureEmptyLoad, uint32_t nowMs) {
         report(Cmd::ESP_error, "%s refused: the machine is %s", what, stateName(state_));
         return;
     }
+    if (refuseIfSafetyOpen(what)) {
+        return;
+    }
     if (!sensorAlive(nowMs)) {
         report(Cmd::ESP_error, "%s refused: no data from the sensors", what);
         return;
@@ -264,6 +277,9 @@ void StateMachine::onDebugDriveFrame(const Command& command) {
         report(Cmd::ESP_error, "Drive frame refused: the machine is %s", stateName(state_));
         return;
     }
+    if (refuseIfSafetyOpen("Drive frame")) {
+        return;
+    }
     if (!drive_->sendFrame(command.payload, command.payloadSize)) {
         report(Cmd::ESP_error, "Bad drive frame");
     }
@@ -271,6 +287,12 @@ void StateMachine::onDebugDriveFrame(const Command& command) {
 
 void StateMachine::onReboot() {
     stopMotor();
+    // No keep-alive while the ESP restarts: turn the timeout off so the drive
+    // doesn't go to CE (which only the reset button clears). The boot turns
+    // it back on.
+    if (!drive_->setCommTimeout(0)) {
+        report(Cmd::ESP_error, "Drive timeout not turned off: expect a CE fault");
+    }
     report(Cmd::ESP_message, "Rebooting");
     rebootRequested_ = true;
 }
@@ -580,29 +602,76 @@ void StateMachine::goIdle() {
     state_ = State::Idle;
 }
 
-// GUI_abort and GUI_check_connection: stop everything, from any state.
+// GUI_abort and GUI_check_connection: stop everything, from any state. A
+// Panic is acknowledged too, but only left once the safety circuit is
+// closed: the drive can only be re-armed by the reset button on the machine.
 void StateMachine::abort() {
-    const State was = state_;
-    if (was == State::Operating) {
+    if (state_ == State::Operating) {
         gui_->flushPoints(); // the points up to the stop are worth seeing
     }
-    goIdle();
-    // Stop pressed: also clears a drive fault (a CE left by a lost
-    // heartbeat, or a fault that stopped the run), so the next run can start.
-    if (!drive_->resetFault()) {
-        report(Cmd::ESP_error, "Drive fault reset not sent");
+    if (state_ != State::Panic) {
+        goIdle();
+        return;
     }
-    if (was == State::Panic) {
-        gui_->send(Cmd::ESP_emergency_clear);
+    stopMotor();
+    panicNeedsGui_ = false;
+    if (safety_ == Safety::Closed) {
+        leavePanic();
+    } else {
+        report(Cmd::ESP_error, "Still in panic: safety circuit open (press the reset button on the machine)");
     }
 }
 
-// Boot and GUI connection: the drive's RS-485 timeout, then a fault reset in
-// case the ESP's own restart left the drive in CE.
+void StateMachine::leavePanic() {
+    goIdle();
+    report(Cmd::ESP_message, "Panic cleared");
+    gui_->send(Cmd::ESP_emergency_clear);
+}
+
+// Boot and GUI connection: the drive's RS-485 timeout. The drive powers up
+// with the value in its EEPROM, and this one is written to its RAM only.
 void StateMachine::prepareDrive() {
-    if (!drive_->setCommTimeout(DRIVE_COMM_TIMEOUT_DECISECONDS) || !drive_->resetFault()) {
-        report(Cmd::ESP_error, "Drive setup not sent");
+    if (!drive_->setCommTimeout(DRIVE_COMM_TIMEOUT_DECISECONDS)) {
+        report(Cmd::ESP_error, "Drive timeout not set");
     }
+}
+
+// The drive's ready relay, debounced: LOW for SAFETY_TRIP_MS opens the
+// circuit (Panic), HIGH for SAFETY_CLEAR_MS closes it. A Panic caused by the
+// circuit clears when it closes: the reset button is the acknowledgement.
+void StateMachine::onSafetyInput(bool ready, uint32_t nowMs) {
+    if (ready != safetyRaw_) {
+        safetyRaw_ = ready;
+        safetyRawSinceMs_ = nowMs;
+    }
+    const uint32_t steadyMs = nowMs - safetyRawSinceMs_;
+    if (!ready && steadyMs >= SAFETY_TRIP_MS && safety_ != Safety::Open) {
+        safety_ = Safety::Open;
+        if (state_ == State::Panic) {
+            panicNeedsGui_ = false; // the reset button will acknowledge both
+            panicReason_ = FaultReason::SafetyCircuit;
+            report(Cmd::ESP_error, "Safety circuit opened (e-stop, door or drive fault)");
+        } else {
+            enterPanic(FaultReason::SafetyCircuit, "e-stop, door or drive fault");
+        }
+    } else if (ready && steadyMs >= SAFETY_CLEAR_MS && safety_ != Safety::Closed) {
+        const bool wasOpen = safety_ == Safety::Open;
+        safety_ = Safety::Closed;
+        if (wasOpen) {
+            report(Cmd::ESP_debug, "Safety circuit closed");
+        }
+        if (state_ == State::Panic && !panicNeedsGui_) {
+            leavePanic();
+        }
+    }
+}
+
+bool StateMachine::refuseIfSafetyOpen(const char* what) {
+    if (safety_ == Safety::Closed) {
+        return false;
+    }
+    report(Cmd::ESP_error, "%s refused: safety circuit open (press the reset button on the machine)", what);
+    return true;
 }
 
 void StateMachine::enterMotionState(State state, uint32_t nowMs) {
@@ -631,6 +700,8 @@ void StateMachine::enterPanic(FaultReason reason, const char* fmt, ...) {
     }
     const State was = state_;
     state_ = State::Panic;
+    panicReason_ = reason;
+    panicNeedsGui_ = reason != FaultReason::SafetyCircuit;
     stopMotor();
 
     char detail[96] = "";
