@@ -1,79 +1,43 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "protocol.h" // Point, MAX_POINTS_PER_FRAME
 
-// A single measurement sample.
+// Hands run points from the main loop (producer) to the GUI link's send task
+// (consumer) without either waiting on the other.
 //
-// NOTE on layout: this struct is the in-memory / logical representation.
-// It is deliberately NOT relied upon for the wire format (no #pragma pack,
-// no assumptions about sizeof(Point) == 10) because natural alignment of
-// the uint32_t member would pad this to 12 bytes on most compilers. The
-// exact 10-byte big-endian wire representation (3B position + 3B force +
-// 4B time) is
-// produced explicitly by protocol.cpp's serialization code instead. See
-// design doc section 4/5.
-struct Point {
-    int32_t position;    // 24-bit signed ADC reading (-8388608..8388607)
-    int32_t force;       // 24-bit signed ADC reading (-8388608..8388607)
-    uint32_t time_ms;    // ms since current test/run started
-};
-
-// Wire size of one point: 3B position + 3B force + 4B time.
-constexpr size_t POINT_WIRE_SIZE = 10;
-
-// 1-byte payload-size header field caps payload at 255 bytes.
-// 255 / 10 = 25 points max per message.
-constexpr size_t MAX_POINTS_PER_BUFFER = 25;
-
-// Double buffer used to hand sensor samples from the main loop (producer)
-// to the comms task (consumer) without the consumer blocking the producer.
-//
-// Usage:
-//   - Main loop calls push() every sample. When push() returns false the
-//     active write buffer is full; the main loop should call trySwap() (or
-//     rely on the comms task doing so) before it can push again.
-//   - Comms task calls trySwap() each time it's ready to send. If the
-//     write buffer is full, it becomes the read buffer (returned via
-//     outBuffer/outCount) and the other internal buffer becomes the new
-//     write target.
-//   - forceSwap() flushes whatever's currently in the write buffer even if
-//     not full -- intended for state-machine exit / end of test run so
-//     data doesn't sit unsent indefinitely (design doc, open item 2).
-//
-// Thread-safety: swap vs push is guarded internally by a FreeRTOS mutex.
-// The critical section only covers pointer/index bookkeeping, not any
-// data copying, so it stays fast even at 500 Hz.
-class DoubleBuffer {
+// A ring of a few frames' worth of points: the send task takes them out one
+// frame at a time and sends that copy while the main loop keeps adding. The
+// spare frames absorb the send task being late (busy writing a message), which
+// a single frame-sized buffer couldn't. The lock only covers bookkeeping and a
+// 300-byte copy, so it stays short at 500 Hz.
+class PointBuffer {
 public:
-    DoubleBuffer();
+    static constexpr size_t CAPACITY = 4 * MAX_POINTS_PER_FRAME; // 200 ms at 500 Hz
 
-    // Producer side (main loop). Returns false if the active write buffer
-    // is already full -- caller must not silently drop the sample; see
-    // design doc open item 2 discussion for handling this case.
+    void begin(); // creates the lock; call once before anything else
+
+    // Main loop side. Returns false (and counts the point as dropped) when the
+    // buffer is full because the send task fell behind.
     bool push(const Point& p);
 
-    // Consumer side (comms task). If the write buffer is full, swaps it to
-    // become the read buffer, copies it into outBuffer (caller-provided,
-    // must hold at least MAX_POINTS_PER_BUFFER points), sets outCount, and
-    // returns true. Returns false (no-op) if the write buffer isn't full
-    // yet.
-    bool trySwap(Point* outBuffer, size_t& outCount);
+    // Send task side. Moves the oldest points into 'out' (room for
+    // MAX_POINTS_PER_FRAME points): a full frame's worth if there is one, or,
+    // if 'partial', whatever is left. Returns the number of points moved
+    // (0 = nothing taken).
+    size_t take(Point* out, bool partial);
 
-    // Same as trySwap but swaps regardless of fill level (used on state
-    // exit / end of run). Returns false only if there is nothing to send
-    // (outCount would be 0).
-    bool forceSwap(Point* outBuffer, size_t& outCount);
-
-    // Drops the points waiting in the write buffer without sending them.
-    // Called at the start of a run so leftovers of the previous one aren't sent.
+    // Forgets the points waiting to be sent and the dropped count. Called at
+    // the start of a run so nothing of the previous one leaks into it.
     void reset();
 
-private:
-    bool swapLocked(Point* outBuffer, size_t& outCount, bool force);
+    // Points refused by push() since the last reset().
+    uint32_t dropped() const { return dropped_; }
 
-    Point buffers_[2][MAX_POINTS_PER_BUFFER];
-    uint8_t writeIndex_;     // 0 or 1: which of buffers_[] is being written
-    size_t writeCount_;      // how many points currently in the write buffer
-    void* mutex_;            // SemaphoreHandle_t, opaque here to keep this
-                              // header includable from non-Arduino contexts
+private:
+    Point points_[CAPACITY];
+    size_t head_ = 0;  // oldest point
+    size_t count_ = 0;
+    volatile uint32_t dropped_ = 0;
+    void* mutex_ = nullptr; // SemaphoreHandle_t, opaque so this header stays free of FreeRTOS
 };

@@ -1,377 +1,109 @@
-// PMC_Dyno.ino
+// PMC_Dyno.ino -- shock dyno firmware (ESP32)
 //
-// Top-level sketch: creates the sensor tasks and comms tasks, then runs
-// the main state-machine loop. See PMC_semaine3 design doc for the full
-// architecture (threading model, framing, state machine).
+// Who does what:
+//   sensor_reader  task (core 0): ADS1256 -> newest force/position pair
+//   gui_link       tasks (core 0): USB serial to the GUI, both directions
+//   drive_link     task (core 0): RS-485 Modbus to the TD350 motor drive
+//   loop()         (core 1, every 2 ms): GUI commands, drive answers and the
+//                  newest sensor pair go to the state machine, which decides
+//                  everything (state_machine.h).
 //
-// This is a first-draft skeleton: sensor reads, RS-485 motor control, and
-// instruction payload decoding are all stubbed with TODOs (see the
-// respective .cpp files). What IS wired up end-to-end here is the
-// threading/data-flow skeleton itself: sensor tasks -> shared structs ->
-// main loop -> double buffer -> comms send task -> UART, and
-// UART -> comms recv task -> instruction queue -> main loop -> state
-// machine.
+// Pins and tunable values: config.h. Wire format: protocol.h and
+// command_flags.h (mirrored in the GUI's SerialDecoder.cs).
+// Logic tests that run on a PC: host_tests/.
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <esp_system.h> // esp_reset_reason()
+#include <esp_system.h>
 
-#include "data_buffer.h"
-#include "protocol.h"
-#include "sensor_task.h"
-#include "motor_control.h"
-#include "state_machine.h"
-#include "comms_task.h"
-#include "drive_comms.h"
+#include "boot_report.h"
 #include "command_flags.h"
-#include "ADS1256.h" // only for the PGA_x / DRATE_x / DIFF_x_y config macros below.
-                     // It also #defines RESET, SYNC, WAKEUP, ... so don't use those names.
+#include "config.h"
+#include "data_buffer.h"
+#include "drive_link.h"
+#include "gui_link.h"
+#include "motor_drive.h"
+#include "sensor_reader.h"
+#include "state_machine.h"
 
-// --- Configuration ---------------------------------------------------
+static_assert(configTICK_RATE_HZ >= 1000, "the 2 ms main loop needs a 1 kHz FreeRTOS tick");
 
-constexpr uint32_t SERIAL_BAUD = 115200; // design doc section 5
+namespace {
 
-// Pins reserved elsewhere: UART0 (GPIO1/3, USB link to the GUI) and UART2
-// (GPIO16/17, RS-485 drive). Everything below avoids those, the flash pins
-// (6-11) and the strapping pins (0, 2, 5, 12*, 15). *HSPI MISO is the exception, see below.
-//
-// Each ADS1256 has its own SPI bus: force on VSPI, position on HSPI.
-constexpr int8_t FORCE_SPI_SCK   = 18;   // VSPI default pins
-constexpr int8_t FORCE_SPI_MISO  = 19;   // DOU
-constexpr int8_t FORCE_SPI_MOSI  = 23;   // DIN
-constexpr int8_t FORCE_ADC_CS    = 25;
-constexpr int8_t FORCE_ADC_DRDY  = 5;    // needs an internal pull-up, so not an input-only pin (34-39) // swapped from 4 to 5
-constexpr int8_t FORCE_ADC_RESET = 26;
-constexpr int8_t FORCE_ADC_SYNC  = 27;
+// Every task but the main loop runs on core 0; loop() runs on core 1.
+constexpr int TASK_CORE = 0;
+constexpr unsigned LINK_TASK_PRIORITY = 2;
+constexpr unsigned SENSOR_TASK_PRIORITY = 5; // above the links: woken by DRDY, must read right away
+constexpr uint32_t REBOOT_DELAY_MS = 300;    // lets the stop frames and the message go out
+constexpr uint32_t LATE_REPORT_PERIOD_MS = 1000;
 
-constexpr int8_t POS_SPI_SCK     = 14;   // HSPI default pins
-constexpr int8_t POS_SPI_MISO    = 34; // was 12   // WARNING: GPIO12 is a boot strapping pin (flash voltage).
-                                         // If the ADC's DOUT is high at power-up the ESP32 can fail
-                                         // to boot. If so, move it to any other free GPIO (the SPI
-                                         // bus can use any pin through the GPIO matrix).
-constexpr int8_t POS_SPI_MOSI    = 13;
-constexpr int8_t POS_ADC_CS      = 33;
-constexpr int8_t POS_ADC_DRDY    = 32;
-constexpr int8_t POS_ADC_RESET   = 21;
-constexpr int8_t POS_ADC_SYNC    = 22;
-
-// Motor drive, RS-485 on UART2.
-// WARNING: the tested motor_drive.ino used GPIO4 for DE/RE, but GPIO4 is the
-// force ADC's DRDY above. Both can't share it. GPIO5 is the free pin used
-// here (it is a strapping pin, but fine as an output). Either rewire DE/RE to
-// GPIO5, or move FORCE_ADC_DRDY elsewhere and set this back to 4.
-constexpr int8_t DRIVE_RX_PIN    = 16; // RO
-constexpr int8_t DRIVE_TX_PIN    = 17; // DI
-constexpr int8_t DRIVE_DE_RE_PIN = 4;  // DE/RE // swapped from 5 to 4
-
-constexpr float ADC_VREF = 2.500f;       // measure the real reference on the board
-
-SPIClass g_hspi(HSPI);                   // second SPI bus, for the position ADC (the first is the global SPI)
-
-constexpr int SENSOR_TASK_STACK_SIZE = 4096;
-constexpr int MAIN_LOOP_CORE = 1;
-constexpr int SENSOR_TASK_CORE = 0;
-constexpr int COMMS_TASK_CORE = 0;
-
-// --- Globals -----------------------------------------------------------
-
-SharedSensorData g_positionSensor; // linear potentiometer
-SharedSensorData g_forceSensor;    // load cell
-
-SensorTaskParams g_positionTaskParams;
-SensorTaskParams g_forceTaskParams;
-
-DoubleBuffer g_dataBuffer;
-MotorControl g_motorControl;
+PointBuffer g_points;
+GuiLink g_gui;
+DriveLink g_driveLink;
+MotorDrive g_drive;
+SensorReader g_sensors;
 StateMachine g_stateMachine;
-CommsTask g_commsTask;
-DriveComms g_driveComms;
 
-uint32_t loop_period = 2000; // 2000us -> 2ms -> 500Hz
-//uint32_t loop_period = 4000; // 2000us -> 2ms -> 500Hz
-uint32_t loop_cutoff = 0;
+TickType_t g_lastWake = 0;
+uint32_t g_lastSequence = 0;   // sequence number of the last sample handed to the state machine
+uint32_t g_lateTicks = 0;      // loop iterations that started late since the last report
+uint32_t g_lastLateReportMs = 0;
 
-// Rolling buffers of the last SENSOR_AVG_SIZE readings (written by the main
-// loop only, so no lock needed).
-constexpr size_t SENSOR_AVG_SIZE = 10;
-int32_t sensor_pos_avg[SENSOR_AVG_SIZE] = {0};
-size_t sensor_pos_avg_i = 0;
-int32_t sensor_force_avg[SENSOR_AVG_SIZE] = {0};
-size_t sensor_force_avg_i = 0;
-size_t sensor_avg_count = 0; // readings stored so far, saturates at SENSOR_AVG_SIZE
-
-// Range of the position average seen so far (signed 24-bit). Starts inverted
-// (min above max) so the first full window sets both.
-int32_t sensor_pos_max = -8388608;
-int32_t sensor_pos_min = 8388607;
-
-// --- Boot reason report ----------------------------------------------------
-
-// Why the chip last (re)started. A watchdog / panic / brownout reset can't be
-// reported when it happens (the chip restarts), so it is reported right after
-// the next boot instead.
-const char* resetReasonName(esp_reset_reason_t r) {
-    switch (r) {
-        case ESP_RST_POWERON:   return "POWERON";
-        case ESP_RST_EXT:       return "EXT_PIN";
-        case ESP_RST_SW:        return "SW_RESET";
-        case ESP_RST_PANIC:     return "PANIC";        // crash / exception
-        case ESP_RST_INT_WDT:   return "INT_WDT";      // interrupt watchdog
-        case ESP_RST_TASK_WDT:  return "TASK_WDT";     // task watchdog (starved task)
-        case ESP_RST_WDT:       return "OTHER_WDT";
-        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-        case ESP_RST_BROWNOUT:  return "BROWNOUT";     // supply dipped
-        case ESP_RST_SDIO:      return "SDIO";
-        default:                return "UNKNOWN";
+// Once a second at most, so a slow patch can't flood the log.
+void reportLateTicks(uint32_t nowMs) {
+    if (g_lateTicks == 0 || nowMs - g_lastLateReportMs < LATE_REPORT_PERIOD_MS) {
+        return;
     }
+    g_gui.sendf(Cmd::ESP_debug, "Main loop late %lu times", (unsigned long)g_lateTicks);
+    g_lateTicks = 0;
+    g_lastLateReportMs = nowMs;
 }
 
-// Queues "BOOT: <reason>" as an ESP_message for the GUI log. Opening the
-// serial port from the GUI resets the ESP too (DTR/RTS), so one of these at
-// connect time (EXT_PIN / POWERON) is normal. One in the middle of a run is
-// not: TASK_WDT / INT_WDT / PANIC / BROWNOUT then says what killed it.
-void reportBootReason() {
-    char msg[48];
-    const esp_reset_reason_t reason = esp_reset_reason();
-    int n;
-    if (reason == ESP_RST_POWERON) {
-        // RTC memory holds garbage after a power-on, so the stages mean nothing.
-        n = snprintf(msg, sizeof(msg), "BOOT: %s", resetReasonName(reason));
-    } else {
-        // Where each sensor task was when the last run died (see SensorStage in
-        // sensor_task.h): 1 presence check, 2 library init, 3 no ADC, 4 running,
-        // 5 reading. P = position, F = force.
-        n = snprintf(msg, sizeof(msg), "BOOT: %s P=%u F=%u", resetReasonName(reason),
-                     (unsigned)g_sensorStage[0], (unsigned)g_sensorStage[1]);
-    }
-    if (n > 0) {
-        g_commsTask.enqueuePriorityMessage(Cmd::ESP_message, (const uint8_t*)msg, (size_t)n);
-    }
-}
-
-// --- Setup ---------------------------------------------------------------
+} // namespace
 
 void setup() {
-    sharedSensorDataInit(g_positionSensor);
-    sharedSensorDataInit(g_forceSensor);
+    g_points.begin();
+    g_gui.begin(&g_points, Config::GUI_BAUD, TASK_CORE, LINK_TASK_PRIORITY);
+    reportBootReason(g_gui);
 
-    // Load cell on AIN1/AIN2 of the board (chip channels 0/1): bridge on
-    // 5 V excitation, so gain 64 (+-39 mV) covers the full range.
-    g_forceTaskParams.id = 1;
-    g_forceTaskParams.target = &g_forceSensor;
-    g_forceTaskParams.spi = &SPI;
-    g_forceTaskParams.sckPin = FORCE_SPI_SCK;
-    g_forceTaskParams.misoPin = FORCE_SPI_MISO;
-    g_forceTaskParams.mosiPin = FORCE_SPI_MOSI;
-    g_forceTaskParams.adc.drdyPin = FORCE_ADC_DRDY;
-    g_forceTaskParams.adc.resetPin = FORCE_ADC_RESET;
-    g_forceTaskParams.adc.syncPin = FORCE_ADC_SYNC;
-    g_forceTaskParams.adc.csPin = FORCE_ADC_CS;
-    g_forceTaskParams.adc.vref = ADC_VREF;
-    g_forceTaskParams.adc.pga = PGA_64;
-    g_forceTaskParams.adc.drate = DRATE_1000SPS;
-    g_forceTaskParams.adc.mux = DIFF_0_1;
-    g_forceTaskParams.adc.buffer = true;
+    g_driveLink.begin(Pins::DRIVE_RX, Pins::DRIVE_TX, Pins::DRIVE_DE_RE, Config::DRIVE_BAUD, TASK_CORE,
+                      LINK_TASK_PRIORITY);
+    g_drive.begin(&g_driveLink);
+    g_drive.stop(); // if the ESP restarted in the middle of a run, the drive is still turning
 
-    // Potentiometer: placeholder, a copy of the load cell settings on its own
-    // pins. TODO: real settings (probably PGA_1, a single-ended input) once it
-    // is wired. With nothing attached the task detects that and publishes a
-    // blank value instead of hanging.
-    g_positionTaskParams.id = 0;
-    g_positionTaskParams.target = &g_positionSensor;
-    g_positionTaskParams.spi = &g_hspi;
-    g_positionTaskParams.sckPin = POS_SPI_SCK;
-    g_positionTaskParams.misoPin = POS_SPI_MISO;
-    g_positionTaskParams.mosiPin = POS_SPI_MOSI;
-    g_positionTaskParams.adc.drdyPin = POS_ADC_DRDY;
-    g_positionTaskParams.adc.resetPin = POS_ADC_RESET;
-    g_positionTaskParams.adc.syncPin = POS_ADC_SYNC;
-    g_positionTaskParams.adc.csPin = POS_ADC_CS;
-    g_positionTaskParams.adc.vref = ADC_VREF;
-    g_positionTaskParams.adc.pga = PGA_1;
-    g_positionTaskParams.adc.drate = DRATE_1000SPS;
-    g_positionTaskParams.adc.mux = SING_0;
-    g_positionTaskParams.adc.buffer = false;
-
-    g_motorControl.begin();
-    g_stateMachine.begin(&g_motorControl, &g_dataBuffer, &g_commsTask, &g_driveComms);
-    g_commsTask.begin(&g_dataBuffer, &g_stateMachine, SERIAL_BAUD);
-    reportBootReason(); // sits in the priority queue until the send task starts below
-    g_driveComms.begin(DRIVE_RX_PIN, DRIVE_TX_PIN, DRIVE_DE_RE_PIN);
-
-    xTaskCreatePinnedToCore(sensorTaskFn, "sensor_position", SENSOR_TASK_STACK_SIZE,
-                             &g_positionTaskParams, 2, nullptr, SENSOR_TASK_CORE);
-    xTaskCreatePinnedToCore(sensorTaskFn, "sensor_force", SENSOR_TASK_STACK_SIZE,
-                             &g_forceTaskParams, 2, nullptr, SENSOR_TASK_CORE);
-
-    xTaskCreatePinnedToCore(CommsTask::sendTaskFn, "comms_send", 4096,
-                             &g_commsTask, 2, nullptr, COMMS_TASK_CORE);
-    xTaskCreatePinnedToCore(CommsTask::recvTaskFn, "comms_recv", 4096,
-                             &g_commsTask, 2, nullptr, COMMS_TASK_CORE);
-    xTaskCreatePinnedToCore(DriveComms::taskFn, "drive_comms", 4096,
-                             &g_driveComms, 2, nullptr, COMMS_TASK_CORE);
-
-    // Main loop runs as the Arduino loop() itself, implicitly on the
-    // "loop task" -- pin it explicitly if loop()'s default core placement
-    // ends up colliding with the above (commonly loopTask runs on core 1
-    // by default on ESP32 Arduino, which is why sensor/comms tasks are
-    // pinned to core 0 above; confirm on your specific board setup).
-
-    loop_cutoff = micros() + loop_period;
+    g_sensors.begin(&g_gui, TASK_CORE, SENSOR_TASK_PRIORITY);
+    g_stateMachine.begin(&g_gui, &g_drive, &g_points);
+    g_lastWake = xTaskGetTickCount();
 }
-
-// --- Rolling averages / calibration ------------------------------------------
-
-// Adds the newest readings to the rolling buffers, then updates the recorded
-// position range from the position average. The range is only updated once
-// the buffer is full, so the zeros it starts with can't drag the minimum down.
-void updateRollingAverages(int32_t posRaw, int32_t forceRaw) {
-    sensor_pos_avg[sensor_pos_avg_i] = posRaw;
-    sensor_pos_avg_i = (sensor_pos_avg_i + 1) % SENSOR_AVG_SIZE;
-    sensor_force_avg[sensor_force_avg_i] = forceRaw;
-    sensor_force_avg_i = (sensor_force_avg_i + 1) % SENSOR_AVG_SIZE;
-    if (sensor_avg_count < SENSOR_AVG_SIZE) {
-        sensor_avg_count++;
-        if (sensor_avg_count < SENSOR_AVG_SIZE) {
-            return;
-        }
-    }
-
-    int64_t sum = 0;
-    for (size_t i = 0; i < SENSOR_AVG_SIZE; i++) {
-        sum += sensor_pos_avg[i];
-    }
-    int32_t posAvg = (int32_t)(sum / (int64_t)SENSOR_AVG_SIZE);
-
-    if (posAvg < sensor_pos_min) sensor_pos_min = posAvg;
-    if (posAvg > sensor_pos_max) sensor_pos_max = posAvg;
-}
-
-// TEMP: answers GUI_calibrate with ESP_calibraion_data. Payload is 9 bytes,
-// each value encoded like a data packet field (24 bit signed, big-endian):
-// [pos min][pos max][average force].
-void handleCalibrateRequest() {
-    int32_t posMin = sensor_pos_min;
-    int32_t posMax = sensor_pos_max;
-    if (posMin > posMax) {
-        posMin = 0; // no full window yet, so no range recorded
-        posMax = 0;
-    }
-
-    int32_t forceAvg = 0;
-    if (sensor_avg_count > 0) {
-        int64_t sum = 0;
-        for (size_t i = 0; i < sensor_avg_count; i++) {
-            sum += sensor_force_avg[i]; // the first sensor_avg_count slots are the valid ones
-        }
-        forceAvg = (int32_t)(sum / (int64_t)sensor_avg_count);
-    }
-
-
-    int pos_scaled_min = (posMin * 25.0) / 1257689.0;
-    int pos_scaled_max = (posMax * 25.0) / 1257689.0;
-    int force_scaled = (0.004575 * forceAvg) - 64.72;
-
-    uint8_t payload[9];
-    //writeInt24BE(posMin, payload);
-    //writeInt24BE(posMax, payload + 3);
-    //writeInt24BE(forceAvg, payload + 6);
-    writeInt24BE(pos_scaled_min, payload);
-    writeInt24BE(pos_scaled_max, payload + 3);
-    writeInt24BE(force_scaled, payload + 6);
-    g_commsTask.enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
-}
-
-// TEMP: GUI_set_rpm carries a complete Modbus frame for the drive. Forward it.
-void handleSetRpm(const Instruction& instr) {
-    if (!g_driveComms.sendFrame(instr.payload, instr.payloadSize)) {
-        const char msg[] = "Bad drive frame";
-        g_commsTask.enqueuePriorityMessage(Cmd::ESP_error, (const uint8_t*)msg, sizeof(msg) - 1);
-    }
-}
-
-// --- Main loop -----------------------------------------------------------
 
 void loop() {
-    //uint32_t loopStartMs = millis();
-    uint32_t loop_time = micros();
+    // One iteration every 2 ms. After a late one, start counting from now
+    // instead of running several back to back to catch up.
+    if (xTaskDelayUntil(&g_lastWake, pdMS_TO_TICKS(Config::LOOP_PERIOD_MS)) == pdFALSE) {
+        g_lateTicks++;
+        g_lastWake = xTaskGetTickCount();
+    }
+    const uint32_t nowMs = millis();
 
-    // Whatever the drive sent back: the state machine uses the running
-    // frequency answers and reports errors; the rest is ignored there.
-    DriveFrame driveFrame;
-    while (g_driveComms.popResponse(driveFrame)) {
-        g_stateMachine.handleDriveResponse(driveFrame);
+    g_stateMachine.pollDrive();
+
+    Command command;
+    while (g_gui.popCommand(command)) {
+        g_stateMachine.handleCommand(command, nowMs);
+    }
+    if (g_stateMachine.rebootRequested()) {
+        vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
+        esp_restart();
     }
 
-    // handle incomming serial instructions
-    Instruction instr;
-    if (g_commsTask.popInstruction(instr)) {
-        g_stateMachine.handleInstruction(instr);
-
-        if (instr.flag == Cmd::GUI_force_reboot){
-            // Forced reboot request from the GUI
-            esp_restart(); // full shutdown and reboot of the ESP32, now.
-        }
-        // Debug commands that don't go through the state machine
-        if (instr.flag == Cmd::GUI_set_rpm) {
-            handleSetRpm(instr);
-        }
-        else if (instr.flag == Cmd::GUI_check_connection) {
-            sensor_pos_max = -8388608;
-            sensor_pos_min = 8388608;
-        }
+    // Only a new pair: the ADC makes ~650 per second, this loop runs 500 times.
+    SensorSample sample;
+    if (g_sensors.latest(sample) && sample.sequence != g_lastSequence) {
+        g_lastSequence = sample.sequence;
+        g_stateMachine.onSample(sample, nowMs);
     }
 
-    if (loop_time >= loop_cutoff){
-        loop_cutoff += loop_period;
-
-        if (loop_time >= loop_cutoff){
-            // loop_time is still greater than loop_cutoff
-            // this mean we missed an entire loop
-            // we are NOT ABLE to run at the set frequency
-
-            // We'll need to enter some form of panic state 
-            String myString = "LOOP MISSED";
-            uint8_t buf[12];
-            myString.getBytes(buf, sizeof(buf));
-            g_commsTask.enqueuePriorityMessage(Cmd::ESP_message, buf, sizeof(buf));
-        }
-
-        int32_t posRaw, forceRaw;
-        uint32_t posSeq, forceSeq;
-        sharedSensorDataRead(g_positionSensor, posRaw, posSeq);
-        sharedSensorDataRead(g_forceSensor, forceRaw, forceSeq);
-
-        // updateRollingAverages(posRaw, forceRaw); // Outdated
-
-        // TODO: track posSeq/forceSeq across iterations; if either hasn't
-        // incremented in N iterations, call
-        // g_stateMachine.raiseFault(FaultReason::SensorStalled) -- design doc
-        // section 7.
-
-        int pos_scaled = 0;
-        int force_scaled = 0;
-        pos_scaled = (posRaw * 25.0) / 1257689.0;
-        force_scaled = (0.004575 * forceRaw) - 64.72;
-
-
-        // the run counts cycles against the position range seen so far
-        //g_stateMachine.setPositionRange(sensor_pos_min, sensor_pos_max); // Outdated
-        g_stateMachine.update(posRaw, forceRaw, loop_time);
-
-        // TODO: measure actual loop iteration time here and compare against
-        // the ~2ms budget; call raiseFault(FaultReason::LoopTimingDrift) if
-        // exceeded (design doc section 7).
-
-        // No fixed delay here deliberately -- the loop is meant to run as
-        // close to 500 Hz as the work above allows. Add pacing/backoff only if
-        // profiling shows it's needed.
-    }
-    else
-    {
-        delayMicroseconds(50);
-    }
-
-    
+    g_stateMachine.tick(nowMs);
+    reportLateTicks(nowMs);
 }

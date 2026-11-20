@@ -1,104 +1,73 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-#include "data_buffer.h"
 
-// Frame format (see design doc section 5). All multi-byte values are
-// big-endian. Position and force are 24-bit signed (two's complement); time
-// is unsigned.
+// GUI link frame format. All multi-byte values are big-endian.
 //
 //   [0xFF][0x00][0xAA | 0x55][size][body ... size bytes]
 //
-// The 3rd sync byte doubles as the type flag:
-//   0xAA -> data body:    size / POINT_WIRE_SIZE Points, back to back
-//                          (each: 3B position, 3B force, 4B time_ms)
+// The 3rd byte is the frame type:
+//   0xAA -> data body:    size / POINT_WIRE_SIZE points, back to back
+//                          (each: 3B position, 3B force, 4B time, see Point)
 //   0x55 -> command body: [flag][payload ...], so size = 1 + payload length.
-//                          A command with no arguments has size = 1.
+//                          Flags are in command_flags.h.
 //
-// 'size' is the body length in bytes only (header not included), so
-// max body is 255 bytes -> max 25 Points per data frame, and max command
-// payload is 254 bytes.
+// 'size' is one byte, so a body is at most 255 bytes: 25 points per data
+// frame, 254 payload bytes per command.
+//
+// Must stay in sync with SerialDecoder.cs on the GUI side.
 
 constexpr uint8_t SYNC_0 = 0xFF;
 constexpr uint8_t SYNC_1 = 0x00;
 constexpr uint8_t TYPE_DATA = 0xAA;
-constexpr uint8_t TYPE_INSTRUCTION = 0x55;
+constexpr uint8_t TYPE_COMMAND = 0x55;
 constexpr size_t HEADER_SIZE = 4;
-constexpr size_t MAX_PAYLOAD_SIZE = 255;
-constexpr size_t MAX_FRAME_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE;
+constexpr size_t MAX_BODY_SIZE = 255;
+constexpr size_t MAX_FRAME_SIZE = HEADER_SIZE + MAX_BODY_SIZE;
+constexpr size_t MAX_COMMAND_PAYLOAD = MAX_BODY_SIZE - 1; // the flag takes one byte
 
-// Writes 'v' as a 24-bit two's complement value to out[0..2], most
-// significant byte first (valid range -8388608..8388607). Same encoding the
-// data frames use for position and force; also used to pack ADC values into
-// command payloads (e.g. calibration data).
-void writeInt24BE(int32_t v, uint8_t* out);
-
-// Reads a 24-bit big-endian two's complement value, sign-extended to int32.
-int32_t readInt24BE(const uint8_t* b);
-
-// Serializes 'count' points into a complete data frame (header + payload)
-// in outBuf. Returns total bytes written, or 0 on error (count too large
-// for outBufSize, or count > MAX_POINTS_PER_BUFFER).
-size_t encodeDataFrame(const Point* points, size_t count,
-                        uint8_t* outBuf, size_t outBufSize);
-
-// Wraps an already-serialized instruction body (flag byte included) into
-// a complete instruction frame (header + body) in outBuf. Returns total
-// bytes written, or 0 on error (payloadSize > MAX_PAYLOAD_SIZE, or doesn't
-// fit in outBufSize). Prefer encodeCommandFrame() for normal use.
-size_t encodeInstructionFrame(const uint8_t* payload, size_t payloadSize,
-                               uint8_t* outBuf, size_t outBufSize);
-
-// Builds a complete command frame: header, size = 1 + payloadSize, flag,
-// then payload. 'payload' may be null when payloadSize is 0. Returns total
-// bytes written, or 0 on error (payloadSize > MAX_PAYLOAD_SIZE - 1, or
-// doesn't fit in outBufSize).
-size_t encodeCommandFrame(uint8_t flag, const uint8_t* payload, size_t payloadSize,
-                           uint8_t* outBuf, size_t outBufSize);
-
-enum class FrameType : uint8_t {
-    Data,
-    Instruction
+// One measurement sample, as sent to the GUI. The wire layout (10 bytes) is
+// written field by field by encodeDataFrame(), never by copying the struct.
+struct Point {
+    int32_t position; // raw ADC counts, signed 24-bit
+    int32_t force;    // raw ADC counts, signed 24-bit
+    uint32_t timeUs;  // microseconds since the run started
 };
 
-struct DecodedFrame {
-    FrameType type;
-    uint8_t payload[MAX_PAYLOAD_SIZE];
+constexpr size_t POINT_WIRE_SIZE = 10;
+constexpr size_t MAX_POINTS_PER_FRAME = MAX_BODY_SIZE / POINT_WIRE_SIZE; // 25
+
+// A command received from the GUI: its flag and payload.
+struct Command {
+    uint8_t flag;
+    uint8_t payload[MAX_COMMAND_PAYLOAD];
     size_t payloadSize;
-
-    // Convenience for FrameType::Data frames: reconstruct Points from
-    // payload. Returns number of points decoded (payloadSize /
-    // POINT_WIRE_SIZE), 0 if this isn't a data frame or payload size isn't
-    // a whole multiple of POINT_WIRE_SIZE (malformed frame).
-    size_t decodePoints(Point* outPoints, size_t maxPoints) const;
 };
 
-// Streaming, byte-at-a-time frame decoder for the inbound UART ISR/task.
-// Resynchronizes automatically: if the sync sequence is ever violated
-// mid-frame, it drops back to hunting for a fresh 0xFF 0x00 [0xAA|0x55].
+// Builds a data frame holding 'count' points (1..MAX_POINTS_PER_FRAME).
+// Returns the frame length, or 0 if it doesn't fit.
+size_t encodeDataFrame(const Point* points, size_t count, uint8_t* out, size_t outSize);
+
+// Builds a command frame: header, flag, payload ('payload' may be null when
+// payloadSize is 0). Returns the frame length, or 0 if it doesn't fit.
+size_t encodeCommandFrame(uint8_t flag, const uint8_t* payload, size_t payloadSize,
+                          uint8_t* out, size_t outSize);
+
+// Byte-at-a-time decoder for frames coming from the GUI. If a frame is cut
+// short or garbled it drops back to looking for the next 0xFF 0x00 header.
 class FrameDecoder {
 public:
-    FrameDecoder();
-
-    // Feed one incoming byte. Returns true exactly when 'out' has been
-    // filled with a complete, validated frame. Call repeatedly as bytes
-    // arrive; internal state persists between calls.
-    bool feed(uint8_t byte, DecodedFrame& out);
-
+    // Feeds one byte. Returns true when 'out' holds a complete command.
+    // Data frames (the GUI never sends any) are skipped.
+    bool feed(uint8_t byte, Command& out);
     void reset();
 
 private:
-    enum class State {
-        WaitSync0,
-        WaitSync1,
-        WaitType,
-        WaitSize,
-        ReadPayload
-    };
+    enum class Step : uint8_t { Sync0, Sync1, Type, Size, Body };
 
-    State state_;
-    uint8_t typeByte_;
-    uint8_t expectedSize_;
-    uint8_t buffer_[MAX_PAYLOAD_SIZE];
-    size_t bytesRead_;
+    Step step_ = Step::Sync0;
+    uint8_t type_ = 0;
+    size_t size_ = 0;
+    size_t received_ = 0;
+    uint8_t body_[MAX_BODY_SIZE];
 };

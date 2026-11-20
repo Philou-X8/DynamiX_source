@@ -1,51 +1,51 @@
 #include "data_buffer.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <string.h>
 
-DoubleBuffer::DoubleBuffer()
-    : writeIndex_(0), writeCount_(0) {
+namespace {
+
+struct Lock {
+    explicit Lock(void* m) : mutex((SemaphoreHandle_t)m) { xSemaphoreTake(mutex, portMAX_DELAY); }
+    ~Lock() { xSemaphoreGive(mutex); }
+    SemaphoreHandle_t mutex;
+};
+
+} // namespace
+
+void PointBuffer::begin() {
     mutex_ = xSemaphoreCreateMutex();
 }
 
-bool DoubleBuffer::push(const Point& p) {
-    bool ok = false;
-    xSemaphoreTake((SemaphoreHandle_t)mutex_, portMAX_DELAY);
-    if (writeCount_ < MAX_POINTS_PER_BUFFER) {
-        buffers_[writeIndex_][writeCount_] = p;
-        writeCount_++;
-        ok = true;
+bool PointBuffer::push(const Point& p) {
+    Lock lock(mutex_);
+    if (count_ >= CAPACITY) {
+        dropped_ = dropped_ + 1;
+        return false;
     }
-    xSemaphoreGive((SemaphoreHandle_t)mutex_);
-    return ok;
+    points_[(head_ + count_) % CAPACITY] = p;
+    count_++;
+    return true;
 }
 
-bool DoubleBuffer::swapLocked(Point* outBuffer, size_t& outCount, bool force) {
-    bool didSwap = false;
-    xSemaphoreTake((SemaphoreHandle_t)mutex_, portMAX_DELAY);
-    if (writeCount_ > 0 && (force || writeCount_ == MAX_POINTS_PER_BUFFER)) {
-        memcpy(outBuffer, buffers_[writeIndex_], writeCount_ * sizeof(Point));
-        outCount = writeCount_;
-        writeIndex_ = 1 - writeIndex_;
-        writeCount_ = 0;
-        didSwap = true;
-    } else {
-        outCount = 0;
+size_t PointBuffer::take(Point* out, bool partial) {
+    Lock lock(mutex_);
+    size_t n = count_;
+    if (n >= MAX_POINTS_PER_FRAME) {
+        n = MAX_POINTS_PER_FRAME;
+    } else if (!partial) {
+        return 0;
     }
-    xSemaphoreGive((SemaphoreHandle_t)mutex_);
-    return didSwap;
+    for (size_t i = 0; i < n; i++) {
+        out[i] = points_[(head_ + i) % CAPACITY];
+    }
+    head_ = (head_ + n) % CAPACITY;
+    count_ -= n;
+    return n;
 }
 
-bool DoubleBuffer::trySwap(Point* outBuffer, size_t& outCount) {
-    return swapLocked(outBuffer, outCount, /*force=*/false);
-}
-
-bool DoubleBuffer::forceSwap(Point* outBuffer, size_t& outCount) {
-    return swapLocked(outBuffer, outCount, /*force=*/true);
-}
-
-void DoubleBuffer::reset() {
-    xSemaphoreTake((SemaphoreHandle_t)mutex_, portMAX_DELAY);
-    writeCount_ = 0;
-    xSemaphoreGive((SemaphoreHandle_t)mutex_);
+void PointBuffer::reset() {
+    Lock lock(mutex_);
+    head_ = 0;
+    count_ = 0;
+    dropped_ = 0;
 }

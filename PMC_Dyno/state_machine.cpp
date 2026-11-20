@@ -1,630 +1,703 @@
-#include <Arduino.h>
+#include "state_machine.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include "bytes.h"
+#include "command_flags.h"
+#include "config.h"
+#include "data_buffer.h"
+#include "gui_link.h"
+#include "motor_drive.h"
 
-#include "state_machine.h"
-#include "comms_task.h"
-#include "drive_comms.h"
+using namespace Config;
 
 namespace {
-
-// Modbus frames for the drive (slave 0x03, function 0x06 = write one
-// register), CRC included. DriveComms::sendFrame re-checks the CRC, so a typo
-// here gets rejected instead of sent.
-//
-// Stop: register 0x2000 (control command) = 0x0005 (stop). Tested on the drive.
-const uint8_t DRIVE_STOP_FRAME[] = {0x03, 0x06, 0x20, 0x00, 0x00, 0x05, 0x43, 0xEB};
-// Start: register 0x2000 = 0x0001 (forward run). Tested on the drive.
-const uint8_t DRIVE_START_FRAME[] = {0x03, 0x06, 0x20, 0x00, 0x00, 0x01, 0x42, 0x28};
-// Speed 0: register 0x800A = P00.10 (set frequency, 0.01 Hz) = 0. The 0x8000
-// bit makes the write go to the drive's RAM only, so it isn't saved to EEPROM
-// (TD350 manual 9.4.5.1).
-const uint8_t DRIVE_SPEED_ZERO_FRAME[] = {0x03, 0x06, 0x80, 0x0A, 0x00, 0x00, 0x81, 0xEA};
-// Speed 10 Hz: same register, value 1000 (0x03E8) in 0.01 Hz units.
-const uint8_t DRIVE_SPEED_10HZ_FRAME[] = {0x03, 0x06, 0x80, 0x0A, 0x03, 0xE8, 0x81, 0x54};
-
-// Waiting for the drive to reach a step's frequency: it is asked for its
-// running frequency (register 0x3000) this often, and the step starts counting
-// once the answer is within the tolerance of the target.
-constexpr uint32_t DRIVE_QUERY_PERIOD_MS = 200;
-constexpr int32_t SPEED_TOLERANCE_CENTIHZ = 50; // 0.50 Hz
-
-// If the drive never answers the frequency query, assume this is how long it
-// takes to speed up.
-constexpr uint32_t SPEEDUP_ASSUMED_MS = 3000;
-// If it answers but never gets to the speed, give up after this long.
-constexpr uint32_t SPEEDUP_TIMEOUT_MS = 10000;
-// While counting, give up if no cycle completes for this long (nothing is
-// moving, or the position sensor isn't working).
-constexpr uint32_t CYCLE_TIMEOUT_MS = 10000;
-
-void writeUint32BE(uint32_t v, uint8_t* out) {
-    out[0] = (uint8_t)(v >> 24);
-    out[1] = (uint8_t)(v >> 16);
-    out[2] = (uint8_t)(v >> 8);
-    out[3] = (uint8_t)v;
-}
 
 const char* faultName(FaultReason reason) {
     switch (reason) {
         case FaultReason::SensorStalled:    return "sensor stalled";
         case FaultReason::SensorOutOfRange: return "sensor out of range";
         case FaultReason::DriveFault:       return "drive fault";
-        case FaultReason::LoopTimingDrift:  return "loop timing";
         case FaultReason::CycleTimeout:     return "no cycles detected";
-        case FaultReason::ForceFailsafe:    return "excessive force detected";
-        default:                            return "unknown";
+        case FaultReason::ForceFailsafe:    return "excessive force";
+        case FaultReason::StrokeNotFound:   return "stroke not found";
     }
+    return "unknown";
+}
+
+const char* stateName(State state) {
+    switch (state) {
+        case State::Idle:        return "idle";
+        case State::Panic:       return "panic";
+        case State::Armed:       return "armed";
+        case State::Calibration: return "calibrating";
+        case State::Operating:   return "running";
+        case State::Tar:         return "TAR";
+    }
+    return "unknown";
+}
+
+bool atRail(int32_t value) {
+    return value >= INT24_MAX - ADC_RAIL_MARGIN || value <= INT24_MIN + ADC_RAIL_MARGIN;
+}
+
+long newtons(int64_t counts) {
+    return (long)((float)counts * FORCE_NEWTON_PER_COUNT);
 }
 
 } // namespace
 
-void StateMachine::begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms, DriveComms* drive) {
-    motor_ = motor;
-    dataBuffer_ = dataBuffer;
-    comms_ = comms;
+void StateMachine::begin(GuiLink* gui, MotorDrive* drive, PointBuffer* points) {
+    gui_ = gui;
     drive_ = drive;
+    points_ = points;
     state_ = State::Idle;
+    forceLimit_ = DEFAULT_FORCE_LIMIT_COUNTS;
 }
 
-void StateMachine::setPositionRange(int32_t min, int32_t max) {
-    posMin_ = min;
-    posMax_ = max;
-}
+// =============================================================================
+// Main loop entry points
+// =============================================================================
 
-bool StateMachine::sendDriveFrame(const uint8_t* frame, size_t length) {
-    const bool ok = drive_ && drive_->sendFrame(frame, length);
-    if (ok && length >= 6) {
-        // Remember the last two frames (function, register, value) so a drive
-        // error reply, which doesn't say which request it answers, can be
-        // reported with the likely culprits.
-        recentFrames_[1] = recentFrames_[0];
-        recentFrames_[0].function = frame[1];
-        recentFrames_[0].reg = (uint16_t)((frame[2] << 8) | frame[3]);
-        recentFrames_[0].value = (uint16_t)((frame[4] << 8) | frame[5]);
-        recentFrames_[0].valid = true;
+void StateMachine::pollDrive() {
+    char text[160];
+    while (drive_->nextError(text, sizeof(text))) {
+        gui_->sendText(Cmd::ESP_error, text);
+        if (inMotionState()) {
+            enterPanic(FaultReason::DriveFault);
+        }
     }
-    return ok;
 }
 
-void StateMachine::stopDrive() {
-    if (!drive_) {
+void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
+    switch (command.flag) {
+        case Cmd::GUI_check_connection:
+            abort();
+            gui_->send(Cmd::ESP_good_connection);
+            break;
+        case Cmd::GUI_abort:
+            abort();
+            break;
+        case Cmd::GUI_run_request:
+            onRunRequest(command, nowMs);
+            break;
+        case Cmd::GUI_calibrate:
+            onCalibrate(command, nowMs);
+            break;
+        case Cmd::GUI_send_sequence:
+            onSequenceStep(command);
+            break;
+        case Cmd::GUI_run_start:
+            onRunStart(nowMs);
+            break;
+        case Cmd::GUI_TAR_request:
+            onTarRequest(/*measureEmptyLoad=*/true, nowMs);
+            break;
+        case Cmd::GUI_bottom_out:
+            onTarRequest(/*measureEmptyLoad=*/false, nowMs);
+            break;
+        case Cmd::GUI_set_rpm:
+            onDebugDriveFrame(command);
+            break;
+        case Cmd::GUI_force_reboot:
+            onReboot();
+            break;
+        default:
+            report(Cmd::ESP_error, "Unknown command %u", (unsigned)command.flag);
+            break;
+    }
+}
+
+void StateMachine::onSample(const SensorSample& sample, uint32_t nowMs) {
+    haveSample_ = true;
+    lastSampleMs_ = nowMs;
+    position_ = positionFilter_.update(sample.position);
+    force_ = forceFilter_.update(sample.force);
+    forceAverage_.update(sample.force);
+
+    if (!inMotionState()) {
         return;
     }
-    // Stop first (urgent: replaces anything still queued for the drive),
-    // then zero the speed so the next start doesn't resume at the old one.
-    // DriveComms spaces the two frames apart.
-    bool ok = drive_->sendFrame(DRIVE_STOP_FRAME, sizeof(DRIVE_STOP_FRAME), true);
-    ok = drive_->sendFrame(DRIVE_SPEED_ZERO_FRAME, sizeof(DRIVE_SPEED_ZERO_FRAME)) && ok;
-    if (!ok) {
-        sendError("Drive stop not sent");
+    if (!safetyChecksPass()) {
+        return; // went to Panic
     }
-}
-
-bool StateMachine::sendCommand(uint8_t flag) {
-    if (!comms_) {
-        return false;
-    }
-    // TODO: a false return means the ack was dropped (priority queue full)
-    // and the GUI will sit waiting for it; decide on a retry/panic policy.
-    return comms_->enqueuePriorityMessage(flag, nullptr, 0);
-}
-
-void StateMachine::sendMessage(const char* text) {
-    if (comms_) {
-        comms_->enqueuePriorityMessage(Cmd::ESP_message, (const uint8_t*)text, strlen(text));
-    }
-}
-
-void StateMachine::sendError(const char* text) {
-    if (comms_) {
-        comms_->enqueuePriorityMessage(Cmd::ESP_error, (const uint8_t*)text, strlen(text));
-    }
-}
-
-void StateMachine::update(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
     switch (state_) {
-        case State::Idle:
-            onIdle();
-            break;
-        case State::Tar:
-            onTar(positionRaw, forceRaw, timeMs);
-            break;
-        case State::Armed:
-            // Accepted a run request, waiting for the sequence and GUI_run_start.
-            // TODO: timeout back to Idle if the start never arrives.
-            break;
         case State::Calibration:
-            onCalibration(positionRaw, forceRaw, timeMs);
+            updateCalibration(nowMs);
             break;
         case State::Operating:
-            onOperating(positionRaw, forceRaw, timeMs);
+            updateOperating(sample, nowMs);
             break;
-        case State::Panic:
-            onPanic();
-            break;
-    }
-}
-
-void StateMachine::onIdle() {
-    // No motion, no acquisition. TODO: watch instruction queue (handled
-    // via handleInstruction) for "start calibration" / "start test".
-}
-
-void StateMachine::onTar(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs){
-    
-    sensor_force_avg[sensor_force_avg_i] = forceRaw;
-    sensor_force_avg_i = (sensor_force_avg_i + 1) % SENSOR_AVG_SIZE;
-    sensor_pos_avg[sensor_pos_avg_i] = positionRaw;
-    sensor_pos_avg_i = (sensor_pos_avg_i + 1) % 32; // limit position buffer (to 32 currently)
-    sensor_avg_count += 1;
-
-    uint64_t force_avg = 0;
-    for (int i = 0; i < SENSOR_AVG_SIZE; i++){
-        force_avg += sensor_force_avg[i];
-    }
-    force_avg = force_avg / SENSOR_AVG_SIZE;
-    uint64_t pos_avg = 0;
-    for (int i = 0; i < 32; i++){ // limit position buffer (to 32 currently)
-        pos_avg += sensor_pos_avg[i];
-    }
-    pos_avg = pos_avg / 32;
-
-    if(pos_avg < posMin_) posMin_ = pos_avg;
-    if(pos_avg > posMax_) posMax_ = pos_avg;
-
-    if (sensor_avg_count > 5000){ // about 10s of running
-        int strokeRange = posMax_ - posMin_;
-        if ( pos_avg > (strokeRange * 0.8 + posMin_) ){
-            tarReady = true;
-
-            stopDrive();
-
-            uint8_t payload[9];
-            //writeInt24BE(posMin, payload);
-            //writeInt24BE(posMax, payload + 3);
-            //writeInt24BE(forceAvg, payload + 6);
-            writeInt24BE(posMin_, payload);
-            writeInt24BE(posMax_, payload + 3);
-            writeInt24BE(forceBot_, payload + 6);
-            if (comms_){
-                comms_->enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
-            }
-
-            state_ = State::Idle;
-        }
-
-    }
-}
-
-
-void StateMachine::onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
-    // TODO: seek -> slow approach -> stop-near-bottom sequence (design doc
-    // open item 4, deferred until drive behavior is characterized). Likely
-    // still wants to push Points to dataBuffer_ during this so the
-    // calibration run is visible on the PC side -- confirm.
-
-    if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
-        // Trigger failsafe
-        //raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
-        //return;
-    }
-
-    switch(calibPhase_){
-        case CalibrationPhase::BottomLoad:
-
-            sensor_force_avg[sensor_avg_count] = forceRaw;
-            sensor_avg_count += 1;
-
-            if (sensor_avg_count >= SENSOR_AVG_SIZE){
-                // finished with this state
-
-                // save result
-                uint64_t force_avg = 0;
-                for (int i = 0; i < sensor_avg_count; i++){
-                    force_avg += sensor_force_avg[i];
-                }
-                force_avg = force_avg / sensor_avg_count;
-                forceBot_ = force_avg;
-
-                // reset values
-                sensor_avg_count = 0;
-                sensor_pos_avg_i = 0;
-                sensor_force_avg_i = 0;
-                posMin_ = 8388600;
-                //posMax_ = -8388600;
-                //posMax_ = -100000;
-                posMax_ = 0;
-
-                // Tell drive to turn at 10 Hz
-                if (!sendDriveFrame(DRIVE_SPEED_10HZ_FRAME, sizeof(DRIVE_SPEED_10HZ_FRAME))) {
-                    sendError("Drive command not sent");
-                }
-                if (!sendDriveFrame(DRIVE_START_FRAME, sizeof(DRIVE_START_FRAME))) {
-                    sendError("Drive command not sent");
-                }
-                calibPhase_ = CalibrationPhase::FindStroke;
-            }
-
-            
-            break;
-        case CalibrationPhase::FindStroke:
-            
-            sensor_pos_avg[sensor_pos_avg_i] = positionRaw;
-            sensor_pos_avg_i = (sensor_pos_avg_i + 1) % SENSOR_AVG_SIZE;
-            sensor_avg_count += 1;
-
-            if (sensor_avg_count >= SENSOR_AVG_SIZE){
-                uint64_t pos_avg = 0;
-                for (int i = 0; i < SENSOR_AVG_SIZE; i++){
-                    pos_avg += sensor_pos_avg[i];
-                }
-                pos_avg = pos_avg / SENSOR_AVG_SIZE;
-
-                if(pos_avg < posMin_) posMin_ = pos_avg;
-                if(pos_avg > posMax_) posMax_ = pos_avg;
-
-            }
-
-            if (sensor_avg_count > 2500){ // 2500 tics, should be about 5sec
-                stopDrive();
-                calibPhase_ = CalibrationPhase::CalibComplete;
-            }
-
-            break;
-
-        case CalibrationPhase::TopLoad:
-
-            break;
-
-        case CalibrationPhase::CalibComplete:
-            setPositionRange(posMin_, posMax_);
-
-            uint8_t payload[9];
-            //writeInt24BE(posMin, payload);
-            //writeInt24BE(posMax, payload + 3);
-            //writeInt24BE(forceAvg, payload + 6);
-            writeInt24BE(posMin_, payload);
-            writeInt24BE(posMax_, payload + 3);
-            writeInt24BE(forceBot_, payload + 6);
-            if (comms_){
-                comms_->enqueuePriorityMessage(Cmd::ESP_calibration_data, payload, sizeof(payload));
-            }
-            
-            calibPhase_ = CalibrationPhase::Idle;
-            // return to armed state and wait for start signal
-            state_ = State::Armed;
+        case State::Tar:
+            updateTar(nowMs);
             break;
         default:
             break;
     }
-
-    (void)positionRaw;
-    (void)forceRaw;
-    (void)timeMs;
 }
 
-void StateMachine::onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs) {
-    // Point times (and the separator timestamps) count microseconds from the
-    // first sample of the run, so they stay small and the GUI can compare them.
-
-    if (forceRaw > forceFailsafe_ || forceRaw < -forceFailsafe_){
-        // Trigger failsafe
-        //raiseFault(FaultReason::ForceFailsafe); // enters panic, stop drives, and send error
-        //return;
+void StateMachine::tick(uint32_t nowMs) {
+    if (inMotionState() && !sensorAlive(nowMs)) {
+        enterPanic(FaultReason::SensorStalled, "no sample for %lu ms", (unsigned long)(nowMs - lastSampleMs_));
+        return;
     }
-
-    if (!runClockStarted_) {
-        runStartUs_ = timeMs;
-        runClockStarted_ = true;
-    }
-    uint32_t runTimeUs = timeMs - runStartUs_;
-
-    Point p;
-    p.position = positionRaw;
-    p.force = forceRaw;
-    p.time_ms = runTimeUs;
-    if (dataBuffer_) dataBuffer_->push(p);
-
-    switch (runPhase_) {
-        case RunPhase::SpeedingUp:
-            updateSpeedingUp(runTimeUs);
-            break;
-        case RunPhase::Counting:
-            updateCounting(positionRaw, runTimeUs);
-            break;
+    if (state_ == State::Armed && nowMs - armedSinceMs_ >= ARMED_TIMEOUT_MS) {
+        denyRun("Run cancelled: not started within %lu s", (unsigned long)(ARMED_TIMEOUT_MS / 1000));
     }
 }
 
-// --- Run sequence -------------------------------------------------------
+// =============================================================================
+// GUI commands
+// =============================================================================
 
-void StateMachine::startRun() {
-    stepIndex_ = 0;
-    runClockStarted_ = false; // the clock starts with the first sample in onOperating()
-    if (dataBuffer_) {
-        dataBuffer_->reset(); // nothing of the previous run gets sent into this one
+void StateMachine::onRunRequest(const Command& command, uint32_t nowMs) {
+    if (state_ != State::Idle) {
+        denyRun("Run refused: the machine is %s", stateName(state_));
+        return;
     }
-    state_ = State::Operating;
-
-    if (!beginStep()) {
-        return; // reported the error and went back to Idle
+    const unsigned count = command.payloadSize >= 1 ? command.payload[0] : 0;
+    if (count == 0 || count > MAX_SEQUENCE_STEPS) {
+        denyRun("Run refused: %u steps (1 to %u allowed)", count, (unsigned)MAX_SEQUENCE_STEPS);
+        return;
     }
-    sendCommand(Cmd::ESP_run_starting);
+    if (!sensorAlive(nowMs)) {
+        denyRun("Run refused: no data from the sensors");
+        return;
+    }
+    memset(stepReceived_, 0, sizeof(stepReceived_));
+    stepsExpected_ = (uint8_t)count;
+    stepsReceived_ = 0;
+    state_ = State::Armed;
+    armedSinceMs_ = nowMs;
+    gui_->send(Cmd::ESP_run_accepted);
 }
 
-// Sends the drive the frequency of the current step (and the start command
-// before the first one), then waits for it to get there.
-bool StateMachine::beginStep() {
-    const SequenceStep& step = steps_[stepIndex_];
-
-    bool ok = sendDriveFrame(step.driveFrame, sizeof(step.driveFrame));
-    if (ok && stepIndex_ == 0) {
-        ok = sendDriveFrame(DRIVE_START_FRAME, sizeof(DRIVE_START_FRAME));
+void StateMachine::onCalibrate(const Command& command, uint32_t nowMs) {
+    if (state_ == State::Idle) {
+        // Debug button: report what is known, without moving anything.
+        sendCalibrationData(forceAverage_.value());
+        return;
     }
-    if (!ok) {
-        sendError("Drive command not sent");
-        enterIdle();
+    if (state_ != State::Armed) {
+        report(Cmd::ESP_error, "Calibration refused: the machine is %s", stateName(state_));
+        return;
+    }
+    const int32_t limit = command.payloadSize >= 3 ? readInt24BE(command.payload) : 0;
+    forceLimit_ = limit > 0 ? limit : DEFAULT_FORCE_LIMIT_COUNTS;
+    report(Cmd::ESP_debug, "Calibration: force limit %ld counts (~%ld N)", (long)forceLimit_, newtons(forceLimit_));
+
+    enterMotionState(State::Calibration, nowMs);
+    calibrationPhase_ = CalibrationPhase::RestLoad;
+    forceMean_.reset();
+}
+
+void StateMachine::onSequenceStep(const Command& command) {
+    if (state_ != State::Armed) {
+        report(Cmd::ESP_error, "Sequence step ignored: the machine is %s", stateName(state_));
+        return;
+    }
+    uint8_t order;
+    SequenceStep step;
+    if (!parseSequenceStep(command.payload, command.payloadSize, order, step) || order >= stepsExpected_) {
+        denyRun("Run refused: bad sequence step");
+        return;
+    }
+    steps_[order] = step;
+    if (!stepReceived_[order]) {
+        stepReceived_[order] = true;
+        stepsReceived_++;
+    }
+}
+
+void StateMachine::onRunStart(uint32_t nowMs) {
+    if (state_ != State::Armed) {
+        report(Cmd::ESP_error, "Run start ignored: the machine is %s", stateName(state_));
+        return;
+    }
+    if (stepsReceived_ != stepsExpected_) {
+        denyRun("Run refused: sequence incomplete, %u of %u steps", (unsigned)stepsReceived_,
+                (unsigned)stepsExpected_);
+        return;
+    }
+    if (!strokeKnown_) {
+        denyRun("Run refused: the stroke isn't known (calibrate or TAR first)");
+        return;
+    }
+    if (!sensorAlive(nowMs)) {
+        denyRun("Run refused: no data from the sensors");
+        return;
+    }
+    startRun(nowMs);
+}
+
+void StateMachine::onTarRequest(bool measureEmptyLoad, uint32_t nowMs) {
+    const char* what = measureEmptyLoad ? "TAR" : "Bottom out";
+    if (state_ != State::Idle) {
+        report(Cmd::ESP_error, "%s refused: the machine is %s", what, stateName(state_));
+        return;
+    }
+    if (!sensorAlive(nowMs)) {
+        report(Cmd::ESP_error, "%s refused: no data from the sensors", what);
+        return;
+    }
+    stopMotor(); // nothing turns while the empty load is measured
+    enterMotionState(State::Tar, nowMs);
+    tarMeasuresEmptyLoad_ = measureEmptyLoad;
+    if (measureEmptyLoad) {
+        report(Cmd::ESP_message, "TAR: measuring the empty load (the bench must be empty)");
+        tarPhase_ = TarPhase::Settle;
+    } else {
+        report(Cmd::ESP_message, "Bottom out: looking for the stroke");
+        startTarMotion(nowMs);
+    }
+}
+
+void StateMachine::onDebugDriveFrame(const Command& command) {
+    if (state_ != State::Idle) {
+        report(Cmd::ESP_error, "Drive frame refused: the machine is %s", stateName(state_));
+        return;
+    }
+    if (!drive_->sendFrame(command.payload, command.payloadSize)) {
+        report(Cmd::ESP_error, "Bad drive frame");
+    }
+}
+
+void StateMachine::onReboot() {
+    stopMotor();
+    report(Cmd::ESP_message, "Rebooting");
+    rebootRequested_ = true;
+}
+
+// =============================================================================
+// Per sample
+// =============================================================================
+
+// Both checks use the median-filtered values and must hold for several
+// samples in a row, so a single bad reading can't stop the machine.
+bool StateMachine::safetyChecksPass() {
+    if (railInARow_.update(atRail(position_) || atRail(force_), SAFETY_CONSECUTIVE_SAMPLES)) {
+        enterPanic(FaultReason::SensorOutOfRange, "position %ld, force %ld", (long)position_, (long)force_);
         return false;
     }
-
-    runPhase_ = RunPhase::SpeedingUp;
-    phaseStartMs_ = millis();
-    lastQueryMs_ = phaseStartMs_;
-    driveFreqFresh_ = false; // only an answer received from now on counts
+    if (FORCE_FAILSAFE_ENABLED) {
+        const int64_t load = (int64_t)force_ - (emptyLoadKnown_ ? emptyLoad_ : 0);
+        const bool over = load > forceLimit_ || load < -(int64_t)forceLimit_;
+        if (overloadInARow_.update(over, SAFETY_CONSECUTIVE_SAMPLES)) {
+            enterPanic(FaultReason::ForceFailsafe, "%ld N, limit %ld N", newtons(load), newtons(forceLimit_));
+            return false;
+        }
+    }
     return true;
 }
 
-void StateMachine::updateSpeedingUp(uint32_t runTimeUs) {
-    const uint32_t now = millis();
-    const uint32_t waited = now - phaseStartMs_;
+void StateMachine::updateCalibration(uint32_t nowMs) {
+    switch (calibrationPhase_) {
+        case CalibrationPhase::RestLoad:
+            forceMean_.add(force_);
+            if (forceMean_.count() < CALIBRATION_REST_SAMPLES) {
+                return;
+            }
+            restLoad_ = forceMean_.mean();
+            if (!drive_->setFrequency(CALIBRATION_CENTIHZ) || !drive_->runForward()) {
+                enterPanic(FaultReason::DriveFault, "drive command not sent");
+                return;
+            }
+            startStrokeSearch(nowMs);
+            calibrationPhase_ = CalibrationPhase::FindStroke;
+            report(Cmd::ESP_debug, "Calibration: rest load %ld counts, looking for the stroke", (long)restLoad_);
+            return;
 
-    // Ask the drive how fast it is running. The answer arrives later through
-    // handleDriveResponse(). A refused request (queue momentarily full) is
-    // simply retried at the next period.
-    if (now - lastQueryMs_ >= DRIVE_QUERY_PERIOD_MS) {
-        lastQueryMs_ = now;
-        uint8_t request[DRIVE_READ_REQUEST_SIZE];
-        buildReadRequest(DRIVE_ADDRESS, DRIVE_REG_RUNNING_FREQ, 1, request);
-        sendDriveFrame(request, sizeof(request));
+        case CalibrationPhase::FindStroke:
+            strokeFinder_.update(position_, nowMs);
+            switch (strokeFinder_.result(nowMs)) {
+                case StrokeFinder::Result::Searching:
+                    return;
+                case StrokeFinder::Result::Failed:
+                    enterPanic(FaultReason::StrokeNotFound, "range only %ld counts",
+                               (long)strokeFinder_.range());
+                    return;
+                case StrokeFinder::Result::Found:
+                    break;
+            }
+            strokeMin_ = strokeFinder_.min();
+            strokeMax_ = strokeFinder_.max();
+            strokeKnown_ = true;
+            stopMotor();
+            sendCalibrationData(restLoad_);
+            report(Cmd::ESP_message, "Calibration done: stroke %ld to %ld", (long)strokeMin_, (long)strokeMax_);
+            state_ = State::Armed;
+            armedSinceMs_ = nowMs;
+            return;
     }
-
-    bool reached = false;
-    if (driveFreqFresh_) {
-        int32_t diff = (int32_t)driveFreqCentiHz_ - (int32_t)steps_[stepIndex_].targetCentiHz;
-        if (diff < 0) diff = -diff;
-        reached = diff <= SPEED_TOLERANCE_CENTIHZ;
-    } else if (waited >= SPEEDUP_ASSUMED_MS) {
-        reached = true; // the drive doesn't answer: assume it took this long
-    }
-
-    if (!reached) {
-        if (waited >= SPEEDUP_TIMEOUT_MS) {
-            sendError("Drive did not reach the speed");
-            raiseFault(FaultReason::DriveFault);
-        }
-        return;
-    }
-
-    // Speed reached: this is where the step's section of the run starts
-    stepStartUs_ = runTimeUs;
-    cycleCounter_.reset();
-    cyclesDone_ = 0;
-    lastCycleMs_ = now;
-    runPhase_ = RunPhase::Counting;
 }
 
-void StateMachine::updateCounting(int32_t positionRaw, uint32_t runTimeUs) {
-    const uint32_t now = millis();
-
-    if (cycleCounter_.update(positionRaw, posMin_, posMax_)) {
-        cyclesDone_++;
-        lastCycleMs_ = now;
+void StateMachine::updateOperating(const SensorSample& sample, uint32_t nowMs) {
+    if (!runClockStarted_) {
+        runStartUs_ = sample.timeUs;
+        runClockStarted_ = true;
     }
+    const uint32_t runUs = sample.timeUs - runStartUs_;
 
-    if (cyclesDone_ >= steps_[stepIndex_].cycles) {
-        finishStep(runTimeUs);
-    } else if (now - lastCycleMs_ >= CYCLE_TIMEOUT_MS) {
-        sendError("No cycles detected");
-        raiseFault(FaultReason::CycleTimeout);
+    Point point;
+    point.position = sample.position; // raw values to the GUI, not the filtered ones
+    point.force = sample.force;
+    point.timeUs = runUs;
+    points_->push(point);
+
+    const SequenceStep& step = steps_[stepIndex_];
+    switch (runPhase_) {
+        case RunPhase::SpeedingUp:
+            switch (checkSpeed(step.targetCentiHz, nowMs)) {
+                case SpeedCheck::Waiting:
+                    return;
+                case SpeedCheck::TimedOut:
+                    enterPanic(FaultReason::DriveFault, "didn't reach %u.%02u Hz",
+                               (unsigned)(step.targetCentiHz / 100), (unsigned)(step.targetCentiHz % 100));
+                    return;
+                case SpeedCheck::Reached:
+                    break;
+            }
+            // This is where the step's section of the run starts.
+            stepStartUs_ = runUs;
+            cycleCounter_.start(strokeMin_, strokeMax_, CYCLE_LOW_PERCENT, CYCLE_HIGH_PERCENT);
+            cyclesDone_ = 0;
+            lastCycleMs_ = nowMs;
+            runPhase_ = RunPhase::Counting;
+            report(Cmd::ESP_debug, "Step %u at speed, counting %u cycles", (unsigned)(stepIndex_ + 1),
+                   (unsigned)step.cycles);
+            return;
+
+        case RunPhase::Counting:
+            if (cycleCounter_.update(position_)) {
+                cyclesDone_++;
+                lastCycleMs_ = nowMs;
+                report(Cmd::ESP_debug, "Step %u: cycle %u of %u", (unsigned)(stepIndex_ + 1),
+                       (unsigned)cyclesDone_, (unsigned)step.cycles);
+            }
+            if (cyclesDone_ >= step.cycles) {
+                finishStep(runUs, nowMs);
+            } else if (nowMs - lastCycleMs_ >= CYCLE_TIMEOUT_MS) {
+                enterPanic(FaultReason::CycleTimeout, "step %u, %u of %u cycles", (unsigned)(stepIndex_ + 1),
+                           (unsigned)cyclesDone_, (unsigned)step.cycles);
+            }
+            return;
     }
+}
+
+void StateMachine::updateTar(uint32_t nowMs) {
+    switch (tarPhase_) {
+        case TarPhase::Settle:
+            if (nowMs - phaseStartMs_ >= TAR_SETTLE_MS) {
+                forceMean_.reset();
+                tarPhase_ = TarPhase::EmptyLoad;
+            }
+            return;
+
+        case TarPhase::EmptyLoad:
+            forceMean_.add(force_);
+            if (forceMean_.count() < TAR_EMPTY_LOAD_SAMPLES) {
+                return;
+            }
+            emptyLoad_ = forceMean_.mean();
+            emptyLoadKnown_ = true;
+            report(Cmd::ESP_message, "TAR: empty load %ld counts (~%ld N), looking for the stroke",
+                   (long)emptyLoad_, newtons(emptyLoad_));
+            startTarMotion(nowMs);
+            return;
+
+        case TarPhase::FindStroke:
+            strokeFinder_.update(position_, nowMs);
+            switch (strokeFinder_.result(nowMs)) {
+                case StrokeFinder::Result::Searching:
+                    return;
+                case StrokeFinder::Result::Failed:
+                    enterPanic(FaultReason::StrokeNotFound, "range only %ld counts",
+                               (long)strokeFinder_.range());
+                    return;
+                case StrokeFinder::Result::Found:
+                    break;
+            }
+            strokeMin_ = strokeFinder_.min();
+            strokeMax_ = strokeFinder_.max();
+            strokeKnown_ = true;
+            seekArmed_ = false;
+            startPhaseClock(nowMs);
+            tarPhase_ = TarPhase::SeekBottom;
+            report(Cmd::ESP_debug, "TAR: stroke %ld to %ld, going to the bottom", (long)strokeMin_,
+                   (long)strokeMax_);
+            return;
+
+        case TarPhase::SeekBottom: {
+            // Stop on the way down, once past the stop point: the motor still
+            // turns a little while it decelerates.
+            const int32_t permille = bottomPermille(position_);
+            if (!seekArmed_) {
+                seekArmed_ = permille <= 500; // seen in the top half first
+            } else if (permille >= TAR_STOP_PERMILLE) {
+                stopMotor();
+                drive_->forgetRunningFrequency();
+                startPhaseClock(nowMs);
+                tarPhase_ = TarPhase::Stopping;
+                return;
+            }
+            if (nowMs - phaseStartMs_ >= TAR_SEEK_TIMEOUT_MS) {
+                enterPanic(FaultReason::CycleTimeout, "never reached the stop point");
+            }
+            return;
+        }
+
+        case TarPhase::Stopping:
+            switch (checkSpeed(0, nowMs)) {
+                case SpeedCheck::Waiting:
+                    return;
+                case SpeedCheck::TimedOut:
+                    enterPanic(FaultReason::DriveFault, "didn't stop");
+                    return;
+                case SpeedCheck::Reached:
+                    startPhaseClock(nowMs);
+                    tarPhase_ = TarPhase::StoppedSettle;
+                    return;
+            }
+            return;
+
+        case TarPhase::StoppedSettle:
+            if (nowMs - phaseStartMs_ >= TAR_STOPPED_SETTLE_MS) {
+                finishTar();
+            }
+            return;
+    }
+}
+
+// =============================================================================
+// Run
+// =============================================================================
+
+void StateMachine::startRun(uint32_t nowMs) {
+    stepIndex_ = 0;
+    runClockStarted_ = false; // starts with the first sample in updateOperating()
+    points_->reset();         // nothing of a previous run gets sent with this one
+    if (!beginStep(nowMs)) {
+        denyRun("Run refused: drive command not sent");
+        return;
+    }
+    enterMotionState(State::Operating, nowMs);
+    gui_->send(Cmd::ESP_run_starting);
+}
+
+// Sends the drive the step's frequency (and the start command before the
+// first step), then waits for it to get there.
+bool StateMachine::beginStep(uint32_t nowMs) {
+    const SequenceStep& step = steps_[stepIndex_];
+    bool sent = drive_->sendFrame(step.driveFrame, sizeof(step.driveFrame));
+    if (sent && stepIndex_ == 0) {
+        sent = drive_->runForward();
+    }
+    if (!sent) {
+        return false;
+    }
+    runPhase_ = RunPhase::SpeedingUp;
+    startPhaseClock(nowMs);
+    drive_->forgetRunningFrequency();
+    report(Cmd::ESP_debug, "Step %u of %u: %u.%02u Hz, %u cycles", (unsigned)(stepIndex_ + 1),
+           (unsigned)stepsExpected_, (unsigned)(step.targetCentiHz / 100), (unsigned)(step.targetCentiHz % 100),
+           (unsigned)step.cycles);
+    return true;
 }
 
 // The step has its cycles: tell the GUI where its section starts and ends,
-// then climb to the next speed, or end the run after the last step.
-void StateMachine::finishStep(uint32_t endUs) {
+// then go to the next speed, or end the run after the last step.
+void StateMachine::finishStep(uint32_t endUs, uint32_t nowMs) {
     uint8_t payload[8];
     writeUint32BE(stepStartUs_, payload);
     writeUint32BE(endUs, payload + 4);
-    if (comms_) {
-        comms_->enqueuePriorityMessage(Cmd::ESP_sequence_separator, payload, sizeof(payload));
-    }
+    gui_->send(Cmd::ESP_sequence_separator, payload, sizeof(payload));
 
     stepIndex_++;
     if (stepIndex_ < stepsExpected_) {
-        beginStep(); // on failure it reports the error and goes Idle
-    } else {
-        sendCommand(Cmd::ESP_run_finished);
-        enterIdle(); // stops the drive and sends the last points
-    }
-}
-
-void StateMachine::handleDriveResponse(const DriveFrame& frame) {
-    uint8_t functionCode, errorCode;
-    if (parseExceptionResponse(frame.bytes, frame.length, DRIVE_ADDRESS, functionCode, errorCode)) {
-        // e.g. "Drive error: func 0x06 code 0x03 | last sent: 0x06 reg 0x800A val 0x03E8 ; 0x06 reg 0x2000 val 0x0001"
-        // (newest first; the refused request is one of them)
-        char msg[128];
-        int n = snprintf(msg, sizeof(msg), "Drive error: func 0x%02X code 0x%02X | last sent:", functionCode, errorCode);
-        for (int i = 0; i < 2; i++) {
-            if (recentFrames_[i].valid && n > 0 && n < (int)sizeof(msg)) {
-                n += snprintf(msg + n, sizeof(msg) - n, "%s 0x%02X reg 0x%04X val 0x%04X",
-                              i == 0 ? "" : " ;", recentFrames_[i].function,
-                              recentFrames_[i].reg, recentFrames_[i].value);
-            }
-        }
-        sendError(msg);
-        if (state_ == State::Operating) {
-            raiseFault(FaultReason::DriveFault);
+        if (!beginStep(nowMs)) {
+            enterPanic(FaultReason::DriveFault, "drive command not sent");
         }
         return;
     }
 
-    uint16_t value;
-    if (parseReadResponseOneRegister(frame.bytes, frame.length, DRIVE_ADDRESS, value)) {
-        driveFreqCentiHz_ = value;
-        driveFreqFresh_ = true;
+    const uint32_t dropped = points_->dropped();
+    goIdle();
+    if (dropped > 0) {
+        report(Cmd::ESP_error, "%lu points were dropped (link too slow)", (unsigned long)dropped);
     }
-    // Anything else (the drive echoing a write, ...) is ignored.
+    // After the last points, so the GUI has them all when it processes the run.
+    gui_->flushPoints(Cmd::ESP_run_finished);
 }
 
-void StateMachine::onPanic() {
-    // Nothing ongoing here -- entry into panic already stopped the motor
-    // and attempted to notify the PC (see enterPanic()). Just wait for an
-    // explicit "return to idle" instruction (handleInstruction) or a
-    // hardware reset.
+// =============================================================================
+// TAR
+// =============================================================================
+
+bool StateMachine::startTarMotion(uint32_t nowMs) {
+    if (!drive_->setFrequency(TAR_CENTIHZ) || !drive_->runForward()) {
+        enterPanic(FaultReason::DriveFault, "drive command not sent");
+        return false;
+    }
+    startStrokeSearch(nowMs);
+    tarPhase_ = TarPhase::FindStroke;
+    return true;
 }
 
-void StateMachine::enterPanic(FaultReason reason) {
-    const bool wasOperating = (state_ == State::Operating || state_ == State::Calibration);
-    lastFault_ = reason;
-    state_ = State::Panic;
-    if (motor_) {
-        motor_->stop();
+// The report says where the yoke really stopped, to tune TAR_STOP_PERMILLE.
+void StateMachine::finishTar() {
+    const double stoppedPercent = bottomPermille(position_) / 10.0;
+    const double stopSentPercent = TAR_STOP_PERMILLE / 10.0;
+    if (tarMeasuresEmptyLoad_) {
+        report(Cmd::ESP_message, "TAR done: empty load %ld counts, stopped at %.1f%% of the stroke "
+               "(stop sent at %.1f%%, 100%% = bottom)", (long)emptyLoad_, stoppedPercent, stopSentPercent);
+    } else {
+        report(Cmd::ESP_message, "Bottom out done: stopped at %.1f%% of the stroke "
+               "(stop sent at %.1f%%, 100%% = bottom)", stoppedPercent, stopSentPercent);
     }
-    stopDrive();
+    sendCalibrationData(emptyLoadKnown_ ? emptyLoad_ : forceAverage_.value());
+    goIdle();
+}
 
-    char msg[40];
-    snprintf(msg, sizeof(msg), "PANIC: %s", faultName(reason));
-    sendError(msg);
+// =============================================================================
+// Transitions
+// =============================================================================
 
-    if (wasOperating && comms_) {
-        comms_->requestFlush(); // the points up to the fault are worth seeing
+void StateMachine::stopMotor() {
+    if (!drive_->stop()) {
+        report(Cmd::ESP_error, "Drive stop not sent");
     }
 }
 
-void StateMachine::enterIdle() {
-    const bool wasOperating = (state_ == State::Operating);
+void StateMachine::goIdle() {
+    stopMotor();
     state_ = State::Idle;
-    lastFault_ = FaultReason::None;
-    if (motor_) {
-        motor_->stop();
-    }
-    stopDrive();
+}
 
-    if (wasOperating && comms_) {
-        comms_->requestFlush(); // send the last, partly filled, buffer of points
+// GUI_abort and GUI_check_connection: stop everything, from any state.
+void StateMachine::abort() {
+    const State was = state_;
+    if (was == State::Operating) {
+        gui_->flushPoints(); // the points up to the stop are worth seeing
+    }
+    goIdle();
+    if (was == State::Panic) {
+        gui_->send(Cmd::ESP_emergency_clear);
     }
 }
 
-void StateMachine::raiseFault(FaultReason reason) {
-    if (state_ != State::Panic) {
-        enterPanic(reason);
+void StateMachine::enterMotionState(State state, uint32_t nowMs) {
+    state_ = state;
+    startPhaseClock(nowMs);
+    railInARow_.reset();
+    overloadInARow_.reset();
+}
+
+// A run request, calibration or start that can't go on: the GUI is waiting
+// in Requesting/Calibrating/Starting and goes back to Idle on ESP_run_denied.
+void StateMachine::denyRun(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    gui_->sendv(Cmd::ESP_error, fmt, args);
+    va_end(args);
+    gui_->send(Cmd::ESP_run_denied);
+    if (state_ == State::Armed || state_ == State::Calibration) {
+        goIdle();
     }
 }
 
-void StateMachine::handleInstruction(const Instruction& instr) {
-    // TODO: dispatch on instr.flag (see command_flags.h):
-    //   - start calibration -> state_ = State::Calibration (from Idle)
-    //   - stop/cancel        -> enterIdle() (from any non-Panic state)
-    //   - return to idle     -> enterIdle() (only valid from Panic, per
-    //                            design doc section 2 -- panic does not
-    //                            auto-recover)
-
-    // TODO: handle GUI_calibrate
-
-    // State is changed before the reply is queued so the ESP is already in
-    // the new state by the time the GUI reacts to the ack.
-    switch (instr.flag) {
-        case Cmd::GUI_check_connection:
-            // Sent on initial connect. Reset to a known-safe state, then pong.
-            enterIdle();
-            sendCommand(Cmd::ESP_good_connection);
-            break;
-        case Cmd::GUI_TAR_request:
-            if (state_ == State::Idle){
-                sensor_avg_count = 0;
-                sensor_pos_avg_i = 0;
-                sensor_force_avg_i = 0;
-
-                tarReady = false;
-                
-                posMin_ = 8388600;
-                //posMax_ = -8388600;
-                posMax_ = -100000;
-                //posMax_ = 0;
-
-                state_ = State::Tar;
-                sendMessage("Machine TAR in process");
-            }
-            break;
-        case Cmd::GUI_run_request:
-            if (state_ == State::Idle) {
-                // Payload: number of GUI_send_sequence steps that will follow
-                const uint8_t count = instr.payloadSize >= 1 ? instr.payload[0] : 0;
-                if (count == 0 || count > MAX_SEQUENCE_STEPS) {
-                    sendError("Run request refused: bad number of steps");
-                    sendCommand(Cmd::ESP_run_denied);
-                    break;
-                }
-                // TODO: check the drive is ready before accepting.
-                memset(stepReceived_, 0, sizeof(stepReceived_));
-                stepsExpected_ = count;
-                stepsReceived_ = 0;
-                state_ = State::Armed;
-                sendCommand(Cmd::ESP_run_accepted);
-            }
-            // TODO: reply with a rejection once one exists in the protocol.
-            break;
-        case Cmd::GUI_calibrate:
-            if (state_ == State::Armed){
-                // TODO: prep position calibration buffer
-                forceFailsafe_ = readInt24BE(instr.payload);
-
-                // reset values
-                sensor_avg_count = 0;
-                sensor_pos_avg_i = 0;
-                sensor_force_avg_i = 0;
-
-                state_ = State::Calibration;
-                calibPhase_ = CalibrationPhase::BottomLoad;
-            } else {
-                sendError("Calibration denied machine not armed");
-            }
-            break;
-        case Cmd::GUI_send_sequence:
-            if (state_ == State::Armed) {
-                uint8_t order;
-                SequenceStep step;
-                if (!parseSequenceStep(instr.payload, instr.payloadSize, order, step) ||
-                    order >= stepsExpected_) {
-                    sendError("Bad sequence step");
-                    break;
-                }
-                steps_[order] = step;
-                if (!stepReceived_[order]) {
-                    stepReceived_[order] = true;
-                    stepsReceived_++;
-                }
-            }
-            break;
-        case Cmd::GUI_run_start:
-            if (state_ == State::Armed) {
-                if (stepsReceived_ != stepsExpected_) {
-                    char msg[48];
-                    snprintf(msg, sizeof(msg), "Sequence incomplete: %u of %u steps",
-                             (unsigned)stepsReceived_, (unsigned)stepsExpected_);
-                    sendError(msg);
-                    enterIdle();
-                    break;
-                }
-                startRun();
-            }
-            break;
-        case Cmd::GUI_abort:
-            enterIdle(); // also stops the drive
-            // TODO: ack with ESP_run_finished once the GUI has a Stopping state.
-            break;
-        default:
-            break;
+void StateMachine::enterPanic(FaultReason reason, const char* fmt, ...) {
+    if (state_ == State::Panic) {
+        return;
     }
+    const State was = state_;
+    state_ = State::Panic;
+    stopMotor();
+
+    char detail[96] = "";
+    if (fmt != nullptr) {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(detail, sizeof(detail), fmt, args);
+        va_end(args);
+    }
+    if (detail[0] != '\0') {
+        report(Cmd::ESP_error, "PANIC: %s (%s)", faultName(reason), detail);
+    } else {
+        report(Cmd::ESP_error, "PANIC: %s", faultName(reason));
+    }
+    gui_->send(Cmd::ESP_emergency);
+    if (was == State::Calibration) {
+        gui_->send(Cmd::ESP_run_denied); // the GUI is still waiting for the run to start
+    }
+    if (was == State::Operating) {
+        gui_->flushPoints(); // the points up to the fault are worth seeing
+    }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+// Asks the drive for its running frequency every DRIVE_QUERY_PERIOD_MS and
+// compares the latest answer with the target. A drive that never answers is
+// assumed to get there in SPEEDUP_ASSUMED_MS.
+StateMachine::SpeedCheck StateMachine::checkSpeed(uint16_t targetCentiHz, uint32_t nowMs) {
+    if (nowMs - lastQueryMs_ >= DRIVE_QUERY_PERIOD_MS) {
+        lastQueryMs_ = nowMs;
+        drive_->queryRunningFrequency(); // refused = queue full, tried again next period
+    }
+    const uint32_t waited = nowMs - phaseStartMs_;
+    uint16_t centiHz;
+    if (drive_->runningFrequency(centiHz)) {
+        const int32_t diff = (int32_t)centiHz - (int32_t)targetCentiHz;
+        if (diff <= SPEED_TOLERANCE_CENTIHZ && diff >= -SPEED_TOLERANCE_CENTIHZ) {
+            return SpeedCheck::Reached;
+        }
+    } else if (waited >= SPEEDUP_ASSUMED_MS) {
+        return SpeedCheck::Reached;
+    }
+    return waited >= SPEEDUP_TIMEOUT_MS ? SpeedCheck::TimedOut : SpeedCheck::Waiting;
+}
+
+void StateMachine::startPhaseClock(uint32_t nowMs) {
+    phaseStartMs_ = nowMs;
+    lastQueryMs_ = nowMs;
+}
+
+void StateMachine::startStrokeSearch(uint32_t nowMs) {
+    strokeFinder_.start(nowMs, STROKE_MIN_RANGE_COUNTS, STROKE_MIN_TIME_MS, STROKE_SETTLE_MS, STROKE_TIMEOUT_MS);
+}
+
+// ESP_calibration_data: [stroke min][stroke max][force], 24-bit raw counts.
+void StateMachine::sendCalibrationData(int32_t force) {
+    uint8_t payload[9];
+    writeInt24BE(strokeKnown_ ? strokeMin_ : 0, payload);
+    writeInt24BE(strokeKnown_ ? strokeMax_ : 0, payload + 3);
+    writeInt24BE(clampInt24(force), payload + 6);
+    gui_->send(Cmd::ESP_calibration_data, payload, sizeof(payload));
+}
+
+void StateMachine::report(uint8_t flag, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    gui_->sendv(flag, fmt, args);
+    va_end(args);
+}
+
+bool StateMachine::inMotionState() const {
+    return state_ == State::Calibration || state_ == State::Operating || state_ == State::Tar;
+}
+
+bool StateMachine::sensorAlive(uint32_t nowMs) const {
+    return haveSample_ && nowMs - lastSampleMs_ <= SENSOR_STALL_MS;
+}
+
+// Where 'position' is along the stroke, in 0.1 %: 0 = top, 1000 = bottom.
+int32_t StateMachine::bottomPermille(int32_t position) const {
+    const int64_t span = (int64_t)strokeMax_ - strokeMin_;
+    if (span <= 0) {
+        return 0;
+    }
+    const int32_t fromMin = (int32_t)(((int64_t)position - strokeMin_) * 1000 / span);
+    return BOTTOM_AT_HIGH_POSITION ? fromMin : 1000 - fromMin;
 }
