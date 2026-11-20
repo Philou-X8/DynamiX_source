@@ -50,6 +50,20 @@ constexpr uint32_t DRIVE_BAUD = 9600;   // Modbus RTU, 8E1 (drive manual chapter
 // newest sensor sample each time, so it never sends the same sample twice.
 constexpr uint32_t LOOP_PERIOD_MS = 2;
 
+// Heartbeat, from the main loop, in every state:
+//   - ESP_live_data to the GUI (position, stroke min/max, force, temperature);
+//   - a keep-alive to the drive whenever nothing else was sent to it for this
+//     long. The drive's RS-485 timeout (P14.04) is set just above it, so if
+//     the main loop or the cable dies the drive faults (CE) and coasts to a
+//     stop (P14.05 = 0).
+constexpr uint32_t HEARTBEAT_PERIOD_MS = 200;
+// P14.04, in 0.1 s: the heartbeat period plus up to 100 ms of slack (the drive
+// link spaces frames 100 ms apart), rounded up -> 0.3 s for 200 ms. A single
+// lost frame then trips the drive; raise the slack if CE faults show up.
+constexpr uint16_t DRIVE_COMM_TIMEOUT_DECISECONDS = (HEARTBEAT_PERIOD_MS + 100 + 99) / 100;
+static_assert(DRIVE_COMM_TIMEOUT_DECISECONDS * 100 > HEARTBEAT_PERIOD_MS,
+              "the drive timeout must be longer than the heartbeat");
+
 // --- ADC (ADS1256 #1) ----------------------------------------------------------
 // Values from the single-board test (adc_test.ino, SINGLE_BOARD mode).
 constexpr uint8_t ADC_STATUS = 0x00;   // MSB first, auto-calibration off, input buffer off

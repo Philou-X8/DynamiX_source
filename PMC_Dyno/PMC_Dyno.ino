@@ -74,6 +74,7 @@ void setup() {
 
     g_sensors.begin(&g_gui, TASK_CORE, SENSOR_TASK_PRIORITY);
     g_stateMachine.begin(&g_gui, &g_drive, &g_points);
+    g_stateMachine.prepareDrive(); // RS-485 timeout on, clear the CE our own restart may have caused
     g_lastWake = xTaskGetTickCount();
 }
 
@@ -105,5 +106,9 @@ void loop() {
     }
 
     g_stateMachine.tick(nowMs);
+    // Last, so it only sends when nothing else went to the drive. Here rather
+    // than in a task of its own: if this loop stops, so does the keep-alive,
+    // and the drive stops the motor on its RS-485 timeout.
+    g_drive.keepAlive(nowMs, Config::HEARTBEAT_PERIOD_MS);
     reportLateTicks(nowMs);
 }

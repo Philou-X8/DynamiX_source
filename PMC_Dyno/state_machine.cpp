@@ -73,6 +73,9 @@ void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
     switch (command.flag) {
         case Cmd::GUI_check_connection:
             abort();
+            // The GUI just connected: the drive may have been powered up
+            // since the boot, and the timeout is only written to its RAM.
+            prepareDrive();
             gui_->send(Cmd::ESP_good_connection);
             break;
         case Cmd::GUI_abort:
@@ -137,6 +140,10 @@ void StateMachine::onSample(const SensorSample& sample, uint32_t nowMs) {
 }
 
 void StateMachine::tick(uint32_t nowMs) {
+    if (nowMs - lastLiveDataMs_ >= HEARTBEAT_PERIOD_MS) {
+        lastLiveDataMs_ = nowMs;
+        sendLiveData(nowMs);
+    }
     if (inMotionState() && !sensorAlive(nowMs)) {
         enterPanic(FaultReason::SensorStalled, "no sample for %lu ms", (unsigned long)(nowMs - lastSampleMs_));
         return;
@@ -580,8 +587,21 @@ void StateMachine::abort() {
         gui_->flushPoints(); // the points up to the stop are worth seeing
     }
     goIdle();
+    // Stop pressed: also clears a drive fault (a CE left by a lost
+    // heartbeat, or a fault that stopped the run), so the next run can start.
+    if (!drive_->resetFault()) {
+        report(Cmd::ESP_error, "Drive fault reset not sent");
+    }
     if (was == State::Panic) {
         gui_->send(Cmd::ESP_emergency_clear);
+    }
+}
+
+// Boot and GUI connection: the drive's RS-485 timeout, then a fault reset in
+// case the ESP's own restart left the drive in CE.
+void StateMachine::prepareDrive() {
+    if (!drive_->setCommTimeout(DRIVE_COMM_TIMEOUT_DECISECONDS) || !drive_->resetFault()) {
+        report(Cmd::ESP_error, "Drive setup not sent");
     }
 }
 
@@ -675,6 +695,21 @@ void StateMachine::sendCalibrationData(int32_t force) {
     writeInt24BE(strokeKnown_ ? strokeMax_ : 0, payload + 3);
     writeInt24BE(clampInt24(force), payload + 6);
     gui_->send(Cmd::ESP_calibration_data, payload, sizeof(payload));
+}
+
+// ESP_live_data: [position][stroke min][stroke max][force][temperature],
+// 24-bit raw counts. Zeros for what isn't known: no stroke before a TAR or a
+// calibration, no sensor values while the ADC isn't delivering.
+void StateMachine::sendLiveData(uint32_t nowMs) {
+    const bool sensors = sensorAlive(nowMs);
+    const int32_t temperature = 0; // TODO: no temperature sensor yet
+    uint8_t payload[15];
+    writeInt24BE(sensors ? position_ : 0, payload);
+    writeInt24BE(strokeKnown_ ? strokeMin_ : 0, payload + 3);
+    writeInt24BE(strokeKnown_ ? strokeMax_ : 0, payload + 6);
+    writeInt24BE(sensors ? clampInt24(forceAverage_.value()) : 0, payload + 9);
+    writeInt24BE(temperature, payload + 12);
+    gui_->send(Cmd::ESP_live_data, payload, sizeof(payload));
 }
 
 void StateMachine::report(uint8_t flag, const char* fmt, ...) {

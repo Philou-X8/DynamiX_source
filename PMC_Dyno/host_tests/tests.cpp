@@ -4,6 +4,7 @@
 // against a simulated machine: a TD350 that ramps toward its set frequency and
 // answers Modbus, a scotch yoke whose position follows the motor, and a load
 // cell. Each test drives it the way the GUI does and checks what the ESP sends.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -203,11 +204,12 @@ struct Machine {
     bool answerQueries = true;
     int exceptionsToSend = 0;
     std::vector<std::vector<uint8_t>> framesReceived;
+    int echoes = 0;
     // mechanics: one revolution of the crank = one cycle of the yoke
     double cyclesPerSecondPerHz = 0.1; // 10 Hz at the drive -> 1 cycle per second
     double revolutions = 0;            // 0 = top of the stroke
     int32_t center = 400000;
-    int32_t amplitude = 300000;        // stroke 100000 .. 700000, bottom = high values
+    int32_t amplitude = 300000;        // stroke 100000 .. 700000, bottom = low values (as on the machine)
     // load cell
     int32_t emptyLoad = 14000;
     bool shockMounted = false;
@@ -235,6 +237,12 @@ struct Machine {
             std::memcpy(echo.bytes, f, 8);
             echo.length = 8;
             g_driveReplies.push_back(echo);
+        } else if (f[1] == MODBUS_DIAGNOSTIC) {
+            echoes++;
+            DriveFrame echo{};
+            std::memcpy(echo.bytes, f, 8);
+            echo.length = 8;
+            g_driveReplies.push_back(echo);
         } else if (f[1] == MODBUS_READ_REGISTERS && reg == DRIVE_REG_RUNNING_FREQUENCY && answerQueries) {
             DriveFrame a{{0x03, 0x03, 0x02}, 7};
             writeUint16BE((uint16_t)std::lround(hz * 100), a.bytes + 3);
@@ -257,7 +265,7 @@ struct Machine {
         return (int32_t)((noise >> 8) % (uint32_t)(2 * span + 1)) - span;
     }
     int32_t position() {
-        return center - (int32_t)(amplitude * std::cos(revolutions * 2 * 3.14159265358979)) + jitter(300);
+        return center + (int32_t)(amplitude * std::cos(revolutions * 2 * 3.14159265358979)) + jitter(300);
     }
     int32_t force() {
         int32_t f = emptyLoad + jitter(200);
@@ -307,6 +315,7 @@ struct Sim {
             revolutionsAt.emplace_back(nowMs * 1000u, m.revolutions);
         }
         sm.tick(nowMs);
+        drive.keepAlive(nowMs, Config::HEARTBEAT_PERIOD_MS);
     }
     void run(uint32_t ms) {
         for (uint32_t i = 0; i < ms / 2; i++) tickOnce();
@@ -431,8 +440,14 @@ TEST(run_counts_the_requested_cycles) {
     CHECK(!sim->m.running);
 
     // run_finished goes out after the points (flush), after both separators
-    CHECK(!g_guiEvents.empty() && g_guiEvents.back().kind == GuiEvent::Flush &&
-          g_guiEvents.back().flag == Cmd::ESP_run_finished);
+    // (live data may follow)
+    {
+        auto flush = std::find_if(g_guiEvents.rbegin(), g_guiEvents.rend(),
+                                  [](const GuiEvent& e) { return e.kind == GuiEvent::Flush; });
+        CHECK(flush != g_guiEvents.rend() && flush->flag == Cmd::ESP_run_finished);
+        const GuiEvent* sep = sim->last(Cmd::ESP_sequence_separator);
+        CHECK(sep != nullptr && &*flush > sep);
+    }
 
     // each section holds the requested cycles: at least that many crank turns,
     // and less than one more (the partial first one isn't counted)
@@ -606,7 +621,12 @@ TEST(abort_stops_everything) {
     sim->command(Cmd::GUI_abort);
     CHECK(sim->sm.state() == State::Idle);
     CHECK(!sim->m.running);
-    CHECK(g_guiEvents.back().kind == GuiEvent::Flush); // the points so far still go out
+    // the points so far still go out, then the fault reset that comes with a stop
+    CHECK(std::any_of(g_guiEvents.end() - 3, g_guiEvents.end(),
+                      [](const GuiEvent& e) { return e.kind == GuiEvent::Flush; }));
+    CHECK(sim->m.framesReceived.back()[1] == MODBUS_WRITE_REGISTER &&
+          readUint16BE(&sim->m.framesReceived.back()[2]) == DRIVE_REG_CONTROL &&
+          readUint16BE(&sim->m.framesReceived.back()[4]) == DRIVE_CONTROL_FAULT_RESET);
 }
 
 TEST(bottom_out_only) {
@@ -618,6 +638,91 @@ TEST(bottom_out_only) {
     CHECK(sim.count(Cmd::ESP_emergency) == 0);
     const double turn = std::fmod(sim.m.revolutions, 1.0);
     CHECK(turn > 0.25 && turn < 0.75);
+}
+
+// ESP_live_data: [position][min][max][force][temperature], int24 each.
+static std::vector<int32_t> liveValues(const GuiEvent& e) {
+    std::vector<int32_t> v;
+    for (size_t i = 0; i + 3 <= e.payload.size(); i += 3) v.push_back(readInt24BE(&e.payload[i]));
+    return v;
+}
+
+TEST(live_data_every_heartbeat_with_zeros_when_unknown) {
+    Sim sim;
+    sim.sensorsOn = false;
+    sim.run(1000);
+    // every 200 ms, whatever the sensors do
+    CHECK(std::abs(sim.count(Cmd::ESP_live_data) - 5) <= 1);
+    const GuiEvent* e = sim.last(Cmd::ESP_live_data);
+    CHECK(e != nullptr && e->payload.size() == 15);
+    if (e) CHECK(liveValues(*e) == std::vector<int32_t>({0, 0, 0, 0, 0}));
+
+    // sensors on, stroke still unknown: position and force, no stroke
+    sim.sensorsOn = true;
+    sim.run(400);
+    e = sim.last(Cmd::ESP_live_data);
+    if (e) {
+        const auto v = liveValues(*e);
+        CHECK(std::abs(v[0] - sim.m.position()) < 2000);
+        CHECK(v[1] == 0 && v[2] == 0);
+        CHECK(std::abs(v[3] - 14000) < 100);
+        CHECK(v[4] == 0);
+    }
+    // during a motion state too
+    sim.command(Cmd::GUI_TAR_request);
+    const int before = sim.count(Cmd::ESP_live_data);
+    sim.run(1000);
+    CHECK(sim.count(Cmd::ESP_live_data) - before >= 4);
+}
+
+TEST(live_data_carries_the_stroke_after_a_tar) {
+    auto sim = tarredSim();
+    sim->run(400);
+    const GuiEvent* e = sim->last(Cmd::ESP_live_data);
+    CHECK(e != nullptr);
+    if (e) {
+        const auto v = liveValues(*e);
+        CHECK(std::abs(v[1] - 100000) < 3000);
+        CHECK(std::abs(v[2] - 700000) < 3000);
+        CHECK(v[0] >= v[1] - 3000 && v[0] <= v[2] + 3000);
+    }
+}
+
+TEST(drive_keep_alive_only_when_the_link_is_quiet) {
+    Sim sim;
+    sim.run(2000);
+    // idle: nothing else goes to the drive, one echo per heartbeat
+    CHECK(std::abs(sim.m.echoes - 10) <= 1);
+    // while speeding up, the speed queries are enough: no echo needed
+    auto sim2 = tarredSim();
+    sim2->startRun({{10.0, 3}});
+    const int echoesBefore = sim2->m.echoes;
+    // speeding up (0 to 10 Hz takes 0.5 s in the sim): a query every 200 ms
+    sim2->run(400);
+    CHECK(sim2->m.echoes - echoesBefore <= 1);
+    // counting: no queries any more, the echo takes over
+    sim2->run(1000);
+    CHECK(std::abs(sim2->m.echoes - echoesBefore - 5) <= 2);
+    CHECK(sim2->count(Cmd::ESP_error) == 0); // echo answers aren't errors
+}
+
+TEST(drive_setup_on_connect) {
+    Sim sim;
+    sim.command(Cmd::GUI_check_connection);
+    bool timeoutSet = false;
+    bool faultReset = false;
+    for (const auto& f : sim.m.framesReceived) {
+        const uint16_t reg = readUint16BE(&f[2]);
+        const uint16_t value = readUint16BE(&f[4]);
+        timeoutSet |= f[1] == MODBUS_WRITE_REGISTER && reg == DRIVE_REG_COMM_TIMEOUT_RAM &&
+                      value == Config::DRIVE_COMM_TIMEOUT_DECISECONDS;
+        faultReset |= f[1] == MODBUS_WRITE_REGISTER && reg == DRIVE_REG_CONTROL &&
+                      value == DRIVE_CONTROL_FAULT_RESET;
+    }
+    CHECK(timeoutSet);
+    CHECK(faultReset);
+    CHECK(Config::DRIVE_COMM_TIMEOUT_DECISECONDS == 3);
+    CHECK(sim.count(Cmd::ESP_good_connection) == 1);
 }
 
 TEST(debug_buttons_in_idle) {

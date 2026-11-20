@@ -24,6 +24,15 @@ public:
     bool sendFrame(const uint8_t* frame, size_t length);
     // Asks for the running frequency; the answer arrives later (see below).
     bool queryRunningFrequency();
+    // Clears a drive fault (e.g. the CE fault left by a heartbeat timeout).
+    bool resetFault();
+    // Sets the drive's RS-485 timeout (P14.04, RAM only, 0.1 s; 0 = off).
+    bool setCommTimeout(uint16_t deciseconds);
+
+    // Call every main loop iteration, after everything else. Sends an echo request (Modbus 08H)
+    // when nothing was handed to the link for 'periodMs', so the drive's
+    // RS-485 timeout only trips if the main loop (or the link) dies.
+    void keepAlive(uint32_t nowMs, uint32_t periodMs);
 
     // Forgets the last running frequency, so runningFrequency() only reports
     // an answer that arrives from now on.
@@ -56,4 +65,6 @@ private:
     SentFrame recent_[2]; // newest first
     uint16_t runningCentiHz_ = 0;
     bool frequencyFresh_ = false;
+    bool sentSinceKeepAlive_ = false; // a frame went to the link since the last keepAlive()
+    uint32_t lastSendMs_ = 0;         // loop time of the last frame (or keep-alive attempt)
 };

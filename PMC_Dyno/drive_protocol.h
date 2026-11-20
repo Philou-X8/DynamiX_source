@@ -10,7 +10,9 @@ constexpr uint8_t DRIVE_ADDRESS = 0x03;          // Modbus slave address of the 
 
 constexpr uint8_t MODBUS_READ_REGISTERS = 0x03;
 constexpr uint8_t MODBUS_WRITE_REGISTER = 0x06;
-constexpr size_t MODBUS_REQUEST_SIZE = 8;        // read and write requests are both 8 bytes
+constexpr uint8_t MODBUS_DIAGNOSTIC = 0x08;      // manual 9.4.3
+constexpr uint16_t MODBUS_DIAG_ECHO = 0x0000;    //   sub-function: return the query data (echo)
+constexpr size_t MODBUS_REQUEST_SIZE = 8;        // read, write and diagnostic requests are all 8 bytes
 
 // Registers (manual 9.4.5)
 constexpr uint16_t DRIVE_REG_SET_FREQUENCY = 0x000A;     // P00.10, unit 0.01 Hz
@@ -18,7 +20,9 @@ constexpr uint16_t DRIVE_REG_SET_FREQUENCY_RAM = 0x800A; // same, written to RAM
 constexpr uint16_t DRIVE_REG_CONTROL = 0x2000;           // control command
 constexpr uint16_t DRIVE_CONTROL_FORWARD = 0x0001;       //   forward running
 constexpr uint16_t DRIVE_CONTROL_STOP = 0x0005;          //   stop (decelerates, P00.12)
+constexpr uint16_t DRIVE_CONTROL_FAULT_RESET = 0x0007;   //   fault reset
 constexpr uint16_t DRIVE_REG_RUNNING_FREQUENCY = 0x3000; // read only, unit 0.01 Hz
+constexpr uint16_t DRIVE_REG_COMM_TIMEOUT_RAM = 0x8E04;  // P14.04 in RAM, unit 0.1 s (0 = off)
 
 // Modbus RTU CRC-16 (poly 0xA001). In a frame it is sent low byte first.
 uint16_t modbusCrc16(const uint8_t* data, size_t length);
@@ -32,6 +36,10 @@ void buildWriteRequest(uint8_t address, uint16_t reg, uint16_t value, uint8_t* o
 
 // [address][0x03][reg hi][reg lo][count hi][count lo][crc lo][crc hi]
 void buildReadRequest(uint8_t address, uint16_t reg, uint16_t count, uint8_t* out);
+
+// [address][0x08][0x00][0x00][data hi][data lo][crc lo][crc hi]: the drive
+// answers with the same frame. Used as a keep-alive.
+void buildEchoRequest(uint8_t address, uint16_t data, uint8_t* out);
 
 // True if 'frame' is a valid write of the set frequency (P00.10 or its RAM
 // alias) to the drive; fills the frequency (0.01 Hz).

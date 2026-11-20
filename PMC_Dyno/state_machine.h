@@ -53,7 +53,11 @@ public:
     void pollDrive();                                           // drive answers (errors, running frequency)
     void handleCommand(const Command& command, uint32_t nowMs); // each command received from the GUI
     void onSample(const SensorSample& sample, uint32_t nowMs);  // the new sensor pair, if there is one
-    void tick(uint32_t nowMs);                                  // timeouts and stall detection
+    void tick(uint32_t nowMs);                                  // timeouts, stall detection, live data
+
+    // Drive RS-485 timeout and fault reset. Called at boot (after the stop)
+    // and when the GUI connects.
+    void prepareDrive();
 
     State state() const { return state_; }
 
@@ -117,6 +121,7 @@ private:
     void startPhaseClock(uint32_t nowMs);
     void startStrokeSearch(uint32_t nowMs);
     void sendCalibrationData(int32_t force);
+    void sendLiveData(uint32_t nowMs);
     void report(uint8_t flag, const char* fmt, ...) PRINTF_FORMAT(3, 4);
     bool inMotionState() const;
     bool sensorAlive(uint32_t nowMs) const;
@@ -128,6 +133,7 @@ private:
 
     State state_ = State::Idle;
     bool rebootRequested_ = false;
+    uint32_t lastLiveDataMs_ = 0;
 
     // --- Sensors (every new sample)
     bool haveSample_ = false;

@@ -31,6 +31,10 @@ constexpr uint8_t ESP_calibration_data = 50; // payload: pos min(int24), pos max
                                              // current force (no motion).
 constexpr uint8_t ESP_sequence_separator = 51; // payload: start(4), end(4) of a step's section, in
                                                // microseconds since the run started (same clock as the points)
+constexpr uint8_t ESP_live_data       = 52;  // every HEARTBEAT_PERIOD_MS, in every state. payload: position,
+                                             // stroke min, stroke max, force, temperature (int24 each, raw
+                                             // counts). 0 for what isn't known (no stroke before a TAR or a
+                                             // calibration, sensors not delivering). Temperature: always 0 for now.
 constexpr uint8_t ESP_run_denied      = 55;  // the run request / calibration / start was refused or failed
                                              // before the run started; the ESP is back to Idle (or Panic)
 

@@ -39,6 +39,7 @@ bool MotorDrive::send(const uint8_t* frame, size_t length, bool urgent) {
         recent_[0].value = readUint16BE(frame + 4);
         recent_[0].valid = true;
     }
+    sentSinceKeepAlive_ = true;
     return true;
 }
 
@@ -70,6 +71,31 @@ bool MotorDrive::queryRunningFrequency() {
     uint8_t frame[MODBUS_REQUEST_SIZE];
     buildReadRequest(DRIVE_ADDRESS, DRIVE_REG_RUNNING_FREQUENCY, 1, frame);
     return send(frame, sizeof(frame));
+}
+
+bool MotorDrive::resetFault() {
+    return write(DRIVE_REG_CONTROL, DRIVE_CONTROL_FAULT_RESET);
+}
+
+bool MotorDrive::setCommTimeout(uint16_t deciseconds) {
+    return write(DRIVE_REG_COMM_TIMEOUT_RAM, deciseconds);
+}
+
+void MotorDrive::keepAlive(uint32_t nowMs, uint32_t periodMs) {
+    if (sentSinceKeepAlive_) { // something went out during this loop iteration
+        sentSinceKeepAlive_ = false;
+        lastSendMs_ = nowMs;
+        return;
+    }
+    if (nowMs - lastSendMs_ < periodMs) {
+        return;
+    }
+    constexpr uint16_t ECHO_DATA = 0x5AA5; // any value, the drive sends it back
+    uint8_t frame[MODBUS_REQUEST_SIZE];
+    buildEchoRequest(DRIVE_ADDRESS, ECHO_DATA, frame);
+    send(frame, sizeof(frame)); // refused = queue full: frames are going out anyway
+    sentSinceKeepAlive_ = false;
+    lastSendMs_ = nowMs;        // either way, try again one period from now
 }
 
 bool MotorDrive::nextError(char* text, size_t textSize) {
