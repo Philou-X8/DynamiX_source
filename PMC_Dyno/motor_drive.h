@@ -29,9 +29,11 @@ public:
     // Sets the drive's RS-485 timeout (P14.04, RAM only, 0.1 s; 0 = off).
     bool setCommTimeout(uint16_t deciseconds);
 
-    // Call every main loop iteration, after everything else. Sends an echo request (Modbus 08H)
-    // when nothing was handed to the link for 'periodMs', so the drive's
-    // RS-485 timeout only trips if the main loop (or the link) dies.
+    // Call every main loop iteration, after everything else. Reads the
+    // running frequency (the drive refuses the Modbus 08H echo) when nothing
+    // was handed to the link for 'periodMs', so the drive's RS-485 timeout
+    // only trips if the main loop (or the link) dies. The answer is a normal
+    // running-frequency answer (runningFrequency()).
     void keepAlive(uint32_t nowMs, uint32_t periodMs);
 
     // Forgets the last running frequency, so runningFrequency() only reports

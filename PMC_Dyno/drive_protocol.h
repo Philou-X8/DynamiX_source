@@ -10,9 +10,9 @@ constexpr uint8_t DRIVE_ADDRESS = 0x03;          // Modbus slave address of the 
 
 constexpr uint8_t MODBUS_READ_REGISTERS = 0x03;
 constexpr uint8_t MODBUS_WRITE_REGISTER = 0x06;
-constexpr uint8_t MODBUS_DIAGNOSTIC = 0x08;      // manual 9.4.3
-constexpr uint16_t MODBUS_DIAG_ECHO = 0x0000;    //   sub-function: return the query data (echo)
-constexpr size_t MODBUS_REQUEST_SIZE = 8;        // read, write and diagnostic requests are all 8 bytes
+// (0x08 diagnostic/echo is listed in the manual, but our drive answers it
+// with exception 0x06 "frame error": don't use it.)
+constexpr size_t MODBUS_REQUEST_SIZE = 8;        // read and write requests are both 8 bytes
 
 // Registers (manual 9.4.5)
 constexpr uint16_t DRIVE_REG_SET_FREQUENCY = 0x000A;     // P00.10, unit 0.01 Hz
@@ -36,10 +36,6 @@ void buildWriteRequest(uint8_t address, uint16_t reg, uint16_t value, uint8_t* o
 
 // [address][0x03][reg hi][reg lo][count hi][count lo][crc lo][crc hi]
 void buildReadRequest(uint8_t address, uint16_t reg, uint16_t count, uint8_t* out);
-
-// [address][0x08][0x00][0x00][data hi][data lo][crc lo][crc hi]: the drive
-// answers with the same frame. Used as a keep-alive.
-void buildEchoRequest(uint8_t address, uint16_t data, uint8_t* out);
 
 // True if 'frame' is a valid write of the set frequency (P00.10 or its RAM
 // alias) to the drive; fills the frequency (0.01 Hz).

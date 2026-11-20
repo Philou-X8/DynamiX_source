@@ -204,7 +204,7 @@ struct Machine {
     bool answerQueries = true;
     int exceptionsToSend = 0;
     std::vector<std::vector<uint8_t>> framesReceived;
-    int echoes = 0;
+    int queries = 0; // running-frequency reads (speed checks and keep-alives)
     // mechanics: one revolution of the crank = one cycle of the yoke
     double cyclesPerSecondPerHz = 0.1; // 10 Hz at the drive -> 1 cycle per second
     double revolutions = 0;            // 0 = top of the stroke
@@ -237,13 +237,8 @@ struct Machine {
             std::memcpy(echo.bytes, f, 8);
             echo.length = 8;
             g_driveReplies.push_back(echo);
-        } else if (f[1] == MODBUS_DIAGNOSTIC) {
-            echoes++;
-            DriveFrame echo{};
-            std::memcpy(echo.bytes, f, 8);
-            echo.length = 8;
-            g_driveReplies.push_back(echo);
         } else if (f[1] == MODBUS_READ_REGISTERS && reg == DRIVE_REG_RUNNING_FREQUENCY && answerQueries) {
+            queries++;
             DriveFrame a{{0x03, 0x03, 0x02}, 7};
             writeUint16BE((uint16_t)std::lround(hz * 100), a.bytes + 3);
             const uint16_t crc = modbusCrc16(a.bytes, 5);
@@ -691,19 +686,20 @@ TEST(live_data_carries_the_stroke_after_a_tar) {
 TEST(drive_keep_alive_only_when_the_link_is_quiet) {
     Sim sim;
     sim.run(2000);
-    // idle: nothing else goes to the drive, one echo per heartbeat
-    CHECK(std::abs(sim.m.echoes - 10) <= 1);
-    // while speeding up, the speed queries are enough: no echo needed
+    // idle: nothing else goes to the drive, one keep-alive read per heartbeat
+    CHECK(std::abs(sim.m.queries - 10) <= 1);
+    for (const auto& f : sim.m.framesReceived) CHECK(f[1] != 0x08); // the drive refuses 08H
+    // while speeding up, the speed queries are enough: no extra keep-alive
     auto sim2 = tarredSim();
     sim2->startRun({{10.0, 3}});
-    const int echoesBefore = sim2->m.echoes;
+    const int before = sim2->m.queries;
     // speeding up (0 to 10 Hz takes 0.5 s in the sim): a query every 200 ms
     sim2->run(400);
-    CHECK(sim2->m.echoes - echoesBefore <= 1);
-    // counting: no queries any more, the echo takes over
+    CHECK(sim2->m.queries - before <= 3); // not doubled by keep-alives
+    // counting: no speed queries any more, the keep-alive takes over
     sim2->run(1000);
-    CHECK(std::abs(sim2->m.echoes - echoesBefore - 5) <= 2);
-    CHECK(sim2->count(Cmd::ESP_error) == 0); // echo answers aren't errors
+    CHECK(std::abs(sim2->m.queries - before - 7) <= 2);
+    CHECK(sim2->count(Cmd::ESP_error) == 0);
 }
 
 TEST(drive_setup_on_connect) {

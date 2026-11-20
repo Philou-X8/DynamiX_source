@@ -90,9 +90,8 @@ void MotorDrive::keepAlive(uint32_t nowMs, uint32_t periodMs) {
     if (nowMs - lastSendMs_ < periodMs) {
         return;
     }
-    constexpr uint16_t ECHO_DATA = 0x5AA5; // any value, the drive sends it back
     uint8_t frame[MODBUS_REQUEST_SIZE];
-    buildEchoRequest(DRIVE_ADDRESS, ECHO_DATA, frame);
+    buildReadRequest(DRIVE_ADDRESS, DRIVE_REG_RUNNING_FREQUENCY, 1, frame);
     send(frame, sizeof(frame)); // refused = queue full: frames are going out anyway
     sentSinceKeepAlive_ = false;
     lastSendMs_ = nowMs;        // either way, try again one period from now

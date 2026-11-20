@@ -46,10 +46,6 @@ void buildReadRequest(uint8_t address, uint16_t reg, uint16_t count, uint8_t* ou
     buildRequest(address, MODBUS_READ_REGISTERS, reg, count, out);
 }
 
-void buildEchoRequest(uint8_t address, uint16_t data, uint8_t* out) {
-    buildRequest(address, MODBUS_DIAGNOSTIC, MODBUS_DIAG_ECHO, data, out);
-}
-
 bool parseSetFrequencyRequest(const uint8_t* frame, size_t length, uint16_t& centiHz) {
     if (length != MODBUS_REQUEST_SIZE || frame[0] != DRIVE_ADDRESS ||
         frame[1] != MODBUS_WRITE_REGISTER || !modbusFrameCrcOk(frame, length)) {
