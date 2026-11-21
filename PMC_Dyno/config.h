@@ -107,11 +107,16 @@ constexpr uint32_t ADC_RETRY_MS = 2000;  // wait between two start-up attempts
 constexpr float FORCE_NEWTON_PER_COUNT = 0.004575f; // load cell, PGA 64 (GUI uses the same value)
 
 // --- Safety ----------------------------------------------------------------------
-// Force failsafe: stops the motor (Panic) when the load cell reads more than
-// the limit away from the empty load (or from 0 before a TAR). The GUI sends
-// the limit with GUI_calibrate; until then this default is used.
+// Force failsafe: stops the motor (Panic) when the raw load cell reading leaves
+// the window [min, max]. The window protects the load cell itself, so it is
+// centred on the load cell's own calibration (the GUI's option page), never on
+// the TAR: a TAR run with a shock mounted must not move it. The GUI sends the
+// window with GUI_set_failsafe on every connection; until then, this default
+// (centred on 0 counts) is used.
 constexpr bool FORCE_FAILSAFE_ENABLED = true;
 constexpr int32_t DEFAULT_FORCE_LIMIT_COUNTS = (int32_t)(3000.0f / FORCE_NEWTON_PER_COUNT); // ~3000 N
+constexpr int32_t DEFAULT_FORCE_MIN_COUNTS = -DEFAULT_FORCE_LIMIT_COUNTS;
+constexpr int32_t DEFAULT_FORCE_MAX_COUNTS = DEFAULT_FORCE_LIMIT_COUNTS;
 
 // The safety checks work on a median of the last 5 samples, so a single bad
 // reading (or two in a row) can't trigger them. On top of that, the limit

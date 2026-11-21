@@ -53,7 +53,8 @@ void StateMachine::begin(GuiLink* gui, MotorDrive* drive, PointBuffer* points) {
     drive_ = drive;
     points_ = points;
     state_ = State::Idle;
-    forceLimit_ = DEFAULT_FORCE_LIMIT_COUNTS;
+    forceMin_ = DEFAULT_FORCE_MIN_COUNTS;
+    forceMax_ = DEFAULT_FORCE_MAX_COUNTS;
 }
 
 // =============================================================================
@@ -110,6 +111,9 @@ void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
             break;
         case Cmd::GUI_force_reboot:
             onReboot();
+            break;
+        case Cmd::GUI_set_failsafe:
+            onSetFailsafe(command);
             break;
         default:
             report(Cmd::ESP_error, "Unknown command %u", (unsigned)command.flag);
@@ -199,13 +203,28 @@ void StateMachine::onCalibrate(const Command& command, uint32_t nowMs) {
         report(Cmd::ESP_error, "Calibration refused: the machine is %s", stateName(state_));
         return;
     }
-    const int32_t limit = command.payloadSize >= 3 ? readInt24BE(command.payload) : 0;
-    forceLimit_ = limit > 0 ? limit : DEFAULT_FORCE_LIMIT_COUNTS;
-    report(Cmd::ESP_debug, "Calibration: force limit %ld counts (~%ld N)", (long)forceLimit_, newtons(forceLimit_));
-
+    (void)command;
     enterMotionState(State::Calibration, nowMs);
     calibrationPhase_ = CalibrationPhase::RestLoad;
     forceMean_.reset();
+}
+
+// Accepted in any state: the window only depends on the load cell, and a
+// new one takes effect on the next sample.
+void StateMachine::onSetFailsafe(const Command& command) {
+    if (command.payloadSize < 6) {
+        report(Cmd::ESP_error, "Failsafe refused: %u bytes, 6 expected", (unsigned)command.payloadSize);
+        return;
+    }
+    const int32_t minCounts = readInt24BE(command.payload);
+    const int32_t maxCounts = readInt24BE(command.payload + 3);
+    if (minCounts >= maxCounts) {
+        report(Cmd::ESP_error, "Failsafe refused: min %ld >= max %ld", (long)minCounts, (long)maxCounts);
+        return;
+    }
+    forceMin_ = minCounts;
+    forceMax_ = maxCounts;
+    report(Cmd::ESP_debug, "Failsafe: force %ld to %ld counts", (long)forceMin_, (long)forceMax_);
 }
 
 void StateMachine::onSequenceStep(const Command& command) {
@@ -247,17 +266,22 @@ void StateMachine::onRunStart(uint32_t nowMs) {
     startRun(nowMs);
 }
 
+// A refused TAR is answered with ESP_run_denied too: the GUI waits in its Tar
+// state for either that or the ESP_calibration_data at the end of the TAR.
 void StateMachine::onTarRequest(bool measureEmptyLoad, uint32_t nowMs) {
     const char* what = measureEmptyLoad ? "TAR" : "Bottom out";
     if (state_ != State::Idle) {
         report(Cmd::ESP_error, "%s refused: the machine is %s", what, stateName(state_));
+        gui_->send(Cmd::ESP_run_denied);
         return;
     }
     if (refuseIfSafetyOpen(what)) {
+        gui_->send(Cmd::ESP_run_denied);
         return;
     }
     if (!sensorAlive(nowMs)) {
         report(Cmd::ESP_error, "%s refused: no data from the sensors", what);
+        gui_->send(Cmd::ESP_run_denied);
         return;
     }
     stopMotor(); // nothing turns while the empty load is measured
@@ -309,10 +333,11 @@ bool StateMachine::safetyChecksPass() {
         return false;
     }
     if (FORCE_FAILSAFE_ENABLED) {
-        const int64_t load = (int64_t)force_ - (emptyLoadKnown_ ? emptyLoad_ : 0);
-        const bool over = load > forceLimit_ || load < -(int64_t)forceLimit_;
+        // raw reading, not relative to the TAR (see DEFAULT_FORCE_LIMIT_COUNTS)
+        const bool over = force_ > forceMax_ || force_ < forceMin_;
         if (overloadInARow_.update(over, SAFETY_CONSECUTIVE_SAMPLES)) {
-            enterPanic(FaultReason::ForceFailsafe, "%ld N, limit %ld N", newtons(load), newtons(forceLimit_));
+            enterPanic(FaultReason::ForceFailsafe, "force %ld counts, window %ld to %ld",
+                       (long)force_, (long)forceMin_, (long)forceMax_);
             return false;
         }
     }

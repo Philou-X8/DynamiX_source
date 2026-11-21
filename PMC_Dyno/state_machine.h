@@ -96,6 +96,7 @@ private:
     // --- GUI commands
     void onRunRequest(const Command& command, uint32_t nowMs);
     void onCalibrate(const Command& command, uint32_t nowMs);
+    void onSetFailsafe(const Command& command);
     void onSequenceStep(const Command& command);
     void onRunStart(uint32_t nowMs);
     void onTarRequest(bool measureEmptyLoad, uint32_t nowMs);
@@ -172,7 +173,8 @@ private:
     bool emptyLoadKnown_ = false;
     int32_t emptyLoad_ = 0;      // TAR: force with nothing on the bench
     int32_t restLoad_ = 0;       // calibration: force at rest with the shock mounted
-    int32_t forceLimit_ = 0;     // failsafe, counts away from the empty load
+    int32_t forceMin_ = 0;       // failsafe window, raw counts (GUI_set_failsafe)
+    int32_t forceMax_ = 0;
 
     // --- Phase bookkeeping (Calibration, Operating, Tar)
     uint32_t phaseStartMs_ = 0;

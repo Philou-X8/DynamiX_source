@@ -46,13 +46,15 @@ constexpr uint8_t GUI_wave_format      = 16; // (not used)
 constexpr uint8_t GUI_TAR_request      = 17; // measure the empty load, then bottom out (machine must be empty)
 constexpr uint8_t GUI_bottom_out       = 18; // bottom out only (no empty load measurement)
 constexpr uint8_t GUI_abort            = 19; // stop the motor, back to Idle (also clears Panic)
-constexpr uint8_t GUI_calibrate        = 40; // while Armed: run calibration, payload = force limit (int24, raw
-                                             // counts, <= 0 = keep the default). While Idle: just report the
-                                             // stored stroke and the current force (ESP_calibration_data).
+constexpr uint8_t GUI_calibrate        = 40; // while Armed: run calibration (no payload). While Idle: just
+                                             // report the stored stroke and the current force
+                                             // (ESP_calibration_data).
 constexpr uint8_t GUI_set_rpm          = 41; // debug, Idle only: payload is a complete Modbus frame
                                              // (CRC included) forwarded to the motor drive
 constexpr uint8_t GUI_send_sequence    = 42; // payload (10 bytes): order(1), number of cycles(1),
                                              // Modbus frame setting the drive frequency(8)
 constexpr uint8_t GUI_force_reboot     = 43; // stop the motor and restart the ESP
+constexpr uint8_t GUI_set_failsafe     = 44; // any state. payload: force min(int24), force max(int24), raw
+                                             // counts: the motor stops (Panic) when the force leaves it
 
 } // namespace Cmd

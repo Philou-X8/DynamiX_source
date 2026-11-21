@@ -372,9 +372,7 @@ struct Sim {
     // GUI flow: run request, calibration, steps, start
     void startRun(const std::vector<std::pair<double, int>>& steps) {
         command(Cmd::GUI_run_request, {(uint8_t)steps.size()});
-        uint8_t limit[3];
-        writeInt24BE((int32_t)(3000.0 / 0.004575), limit);
-        command(Cmd::GUI_calibrate, {limit[0], limit[1], limit[2]});
+        command(Cmd::GUI_calibrate);
         runUntilState(State::Armed, 40000);
         for (size_t i = 0; i < steps.size(); i++)
             command(Cmd::GUI_send_sequence, guiStep((uint8_t)i, (uint8_t)steps[i].second, steps[i].first));
@@ -513,6 +511,42 @@ TEST(sustained_overload_trips_the_failsafe) {
     CHECK(sim->count(Cmd::ESP_emergency_clear) == 1);
 }
 
+// GUI_set_failsafe: [min][max], raw counts.
+static std::vector<uint8_t> failsafeWindow(int32_t minCounts, int32_t maxCounts) {
+    uint8_t b[6];
+    writeInt24BE(minCounts, b);
+    writeInt24BE(maxCounts, b + 3);
+    return std::vector<uint8_t>(b, b + 6);
+}
+
+TEST(failsafe_window_ignores_the_tar) {
+    // a TAR with the shock mounted: the "empty load" is really the shock's force
+    Sim sim;
+    sim.m.emptyLoad = 500000;
+    sim.command(Cmd::GUI_set_failsafe, failsafeWindow(-100000, 400000));
+    sim.command(Cmd::GUI_TAR_request);
+    sim.run(100);
+    // the window still applies to the raw reading: 500000 is outside it
+    CHECK(sim.sm.state() == State::Panic);
+    CHECK(sim.anyText(Cmd::ESP_error, "PANIC: excessive force (force 5"));
+    CHECK(!sim.m.running);
+}
+
+TEST(failsafe_window_set_and_refused) {
+    auto sim = tarredSim();
+    sim->command(Cmd::GUI_set_failsafe, failsafeWindow(-20000, 20000));
+    CHECK(sim->anyText(Cmd::ESP_debug, "Failsafe: force -20000 to 20000 counts"));
+    sim->command(Cmd::GUI_set_failsafe, failsafeWindow(5, 5));
+    CHECK(sim->anyText(Cmd::ESP_error, "Failsafe refused: min 5 >= max 5"));
+    sim->command(Cmd::GUI_set_failsafe, {1, 2, 3});
+    CHECK(sim->anyText(Cmd::ESP_error, "Failsafe refused: 3 bytes"));
+    // the shock pushes ~60000 counts above the 14000 rest: the run trips the window
+    sim->startRun({{10.0, 20}});
+    sim->run(5000);
+    CHECK(sim->sm.state() == State::Panic);
+    CHECK(sim->anyText(Cmd::ESP_error, "window -20000 to 20000"));
+}
+
 TEST(sensor_stall_stops_the_run) {
     auto sim = tarredSim();
     sim->startRun({{10.0, 20}});
@@ -545,9 +579,7 @@ TEST(drive_refusing_the_start_is_reported) {
     auto sim = tarredSim();
     sim->m.exceptionsToSend = 0;
     sim->command(Cmd::GUI_run_request, {1});
-    uint8_t limit[3];
-    writeInt24BE(655737, limit);
-    sim->command(Cmd::GUI_calibrate, {limit[0], limit[1], limit[2]});
+    sim->command(Cmd::GUI_calibrate);
     sim->runUntilState(State::Armed, 40000);
     sim->command(Cmd::GUI_send_sequence, guiStep(0, 5, 10.0));
     sim->m.exceptionsToSend = 2; // refuses the frequency and the start
@@ -798,6 +830,7 @@ TEST(boot_with_the_circuit_open) {
     CHECK(!sim.m.running);
     sim.command(Cmd::GUI_TAR_request);
     CHECK(sim.sm.state() == State::Panic);
+    CHECK(sim.count(Cmd::ESP_run_denied) == 1); // the GUI leaves its Tar state
     sim.safetyReady = true;
     sim.run(Config::SAFETY_CLEAR_MS + 20);
     CHECK(sim.sm.state() == State::Idle);
