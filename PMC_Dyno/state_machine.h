@@ -7,6 +7,7 @@
 #include "sensor_sample.h"
 #include "sequence_step.h"
 #include "signal_filters.h"
+#include "stroke_tools.h"
 
 class GuiLink;
 class MotorDrive;
@@ -15,7 +16,7 @@ class PointBuffer;
 // The machine's states. Mirrors the GUI's MachineController:
 //
 //   Idle --GUI_run_request--> Armed --GUI_calibrate--> Calibration --done--> Armed
-//        --GUI_send_sequence x N, GUI_run_start--> Operating --last step--> Idle
+//        --GUI_send_sequence x N, GUI_run_start--> Operating --last step, bottom out--> Idle
 //   Idle --GUI_TAR_request / GUI_bottom_out--> Tar --done--> Idle
 //   any motion state --fault--> Panic --GUI_abort--> Idle
 //   any state --safety circuit open (pin DRIVE_READY not at DRIVE_READY_LEVEL)--> Panic
@@ -27,9 +28,9 @@ enum class State : uint8_t {
     Panic,       // a fault stopped the motor. Left by the machine's reset button for a
                  // safety circuit fault, by GUI_abort for the others (circuit closed)
     Armed,       // run accepted, waiting for the calibration, the sequence and the start
-    Calibration, // run calibration: force at rest, then the stroke at a slow speed
-    Operating,   // running the sequence and streaming points
-    Tar,         // empty load (TAR only), then bottom out the scotch yoke
+    Calibration, // run calibration: bottom force, stroke, top force
+    Operating,   // running the sequence and streaming points, then the bottom out
+    Tar,         // empty load (TAR only), stroke, then bottom out the scotch yoke
 };
 
 enum class FaultReason : uint8_t {
@@ -64,6 +65,10 @@ public:
     // DRIVE_READY): true = pin at DRIVE_READY_LEVEL = safety circuit closed, drive ready.
     void onSafetyInput(bool ready, uint32_t nowMs);
 
+    // Newest temperature (0.01 degC, 0 = unknown), for the live data. Called
+    // every main loop iteration.
+    void setTemperature(int32_t centiCelsius) { temperature_ = centiCelsius; }
+
     // Turns on the drive's RS-485 timeout. Called at boot (after the stop)
     // and when the GUI connects. Never resets a drive fault.
     void prepareDrive();
@@ -78,24 +83,32 @@ private:
     enum class RunPhase : uint8_t {
         SpeedingUp, // step frequency sent, waiting for the drive to get there
         Counting,   // at speed, counting cycles
+        BottomOut,  // every step done, no more points: parking the yoke at the bottom
     };
     enum class CalibrationPhase : uint8_t {
-        RestLoad,   // motor stopped: average the force with the shock mounted
-        FindStroke, // motor turning slowly: record the position min/max
+        BottomForce, // motor stopped (yoke near the bottom): average the force
+        FindStroke,  // a little over one cycle at CALIBRATION_CENTIHZ: where the yoke turns back
+        ApproachTop, // on the way up: slow down to CALIBRATION_TOP_CENTIHZ before the top
+        TopForce,    // average the force through the top
     };
     enum class TarPhase : uint8_t {
-        Settle,        // motor stopped, let things settle
-        EmptyLoad,     // average the force with nothing on the bench
-        FindStroke,    // motor turning slowly: record the position min/max
-        SeekBottom,    // wait for the yoke to pass the stop point on its way down
-        Stopping,      // stop sent, wait for the drive to reach 0 Hz
-        StoppedSettle, // stopped, let the yoke settle before reading where it is
+        EmptyLoad,  // motor stopped: average the force with nothing on the bench (TAR only)
+        FindStroke, // motor turning slowly: record the position min/max
+        BottomOut,  // park the yoke at the bottom
+    };
+    // The bottom out, shared by the TAR, GUI_bottom_out and the end of a run.
+    enum class BottomOutPhase : uint8_t {
+        ReachSpeed, // TAR_CENTIHZ sent, waiting for the drive to get there
+        Seek,       // wait for the yoke to pass the stop point on its way down
+        Stopping,   // stop sent, wait for the drive to reach 0 Hz
+        Settle,     // stopped, let the yoke settle before reading where it is
     };
     enum class SpeedCheck : uint8_t { Waiting, Reached, TimedOut };
+    enum class Progress : uint8_t { Busy, Done, Failed }; // Failed: already in Panic
 
     // --- GUI commands
     void onRunRequest(const Command& command, uint32_t nowMs);
-    void onCalibrate(const Command& command, uint32_t nowMs);
+    void onCalibrate(uint32_t nowMs);
     void onSetFailsafe(const Command& command);
     void onSequenceStep(const Command& command);
     void onRunStart(uint32_t nowMs);
@@ -113,10 +126,19 @@ private:
     void startRun(uint32_t nowMs);
     bool beginStep(uint32_t nowMs);
     void finishStep(uint32_t endUs, uint32_t nowMs);
+    void finishRun();
+
+    // --- Calibration
+    void finishCalibration(uint32_t nowMs);
 
     // --- TAR
     bool startTarMotion(uint32_t nowMs);
     void finishTar();
+
+    // --- Bottom out (any motion state)
+    bool startBottomOut(uint32_t nowMs);
+    Progress updateBottomOut(uint32_t nowMs);
+    double bottomPercent() const;
 
     // --- Transitions
     void stopMotor();
@@ -132,12 +154,14 @@ private:
     SpeedCheck checkSpeed(uint16_t targetCentiHz, uint32_t nowMs);
     void startPhaseClock(uint32_t nowMs);
     void startStrokeSearch(uint32_t nowMs);
-    void sendCalibrationData(int32_t force);
+    void setStroke(int32_t strokeMin, int32_t strokeMax);
+    bool startMotor(uint16_t centiHz);
+    void sendCalibrationData();
+    void sendTarData(int32_t force);
     void sendLiveData(uint32_t nowMs);
     void report(uint8_t flag, const char* fmt, ...) PRINTF_FORMAT(3, 4);
     bool inMotionState() const;
     bool sensorAlive(uint32_t nowMs) const;
-    int32_t bottomPermille(int32_t position) const;
 
     GuiLink* gui_ = nullptr;
     MotorDrive* drive_ = nullptr;
@@ -154,6 +178,7 @@ private:
     FaultReason panicReason_ = FaultReason::SafetyCircuit;
     bool panicNeedsGui_ = false;       // a software fault: GUI_abort acknowledges it
     uint32_t lastLiveDataMs_ = 0;
+    int32_t temperature_ = 0;          // 0.01 degC, 0 = unknown
 
     // --- Sensors (every new sample)
     bool haveSample_ = false;
@@ -172,15 +197,18 @@ private:
     int32_t strokeMax_ = 0;
     bool emptyLoadKnown_ = false;
     int32_t emptyLoad_ = 0;      // TAR: force with nothing on the bench
-    int32_t restLoad_ = 0;       // calibration: force at rest with the shock mounted
+    int32_t bottomForce_ = 0;    // calibration: at rest near the bottom, shock mounted
+    int32_t topForce_ = 0;       // calibration: through the top at slow speed
     int32_t forceMin_ = 0;       // failsafe window, raw counts (GUI_set_failsafe)
     int32_t forceMax_ = 0;
 
     // --- Phase bookkeeping (Calibration, Operating, Tar)
     uint32_t phaseStartMs_ = 0;
     uint32_t lastQueryMs_ = 0;   // last running-frequency query
-    RunningMean forceMean_;
-    StrokeFinder strokeFinder_;
+    RestForce restForce_;        // TAR empty load, calibration bottom force
+    StrokeFinder strokeFinder_;  // TAR: stroke from a settled range
+    BottomOutPhase bottomOutPhase_ = BottomOutPhase::ReachSpeed;
+    EndApproach approach_;       // bottom out stop point, calibration slow-down point
 
     // --- Armed: the run being prepared
     uint32_t armedSinceMs_ = 0;
@@ -199,9 +227,13 @@ private:
     uint8_t cyclesDone_ = 0;
     CycleCounter cycleCounter_;
 
-    // --- Calibration / Tar
-    CalibrationPhase calibrationPhase_ = CalibrationPhase::RestLoad;
-    TarPhase tarPhase_ = TarPhase::Settle;
+    // --- Calibration
+    CalibrationPhase calibrationPhase_ = CalibrationPhase::BottomForce;
+    uint32_t calibrationMotionStartMs_ = 0;
+    TurnStrokeFinder turnFinder_;
+    EndForceAverage topForceAverage_;
+
+    // --- Tar
+    TarPhase tarPhase_ = TarPhase::EmptyLoad;
     bool tarMeasuresEmptyLoad_ = false;
-    bool seekArmed_ = false;     // the yoke has been seen away from the bottom
 };

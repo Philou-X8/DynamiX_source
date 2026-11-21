@@ -92,7 +92,7 @@ void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
             onRunRequest(command, nowMs);
             break;
         case Cmd::GUI_calibrate:
-            onCalibrate(command, nowMs);
+            onCalibrate(nowMs);
             break;
         case Cmd::GUI_send_sequence:
             onSequenceStep(command);
@@ -193,20 +193,16 @@ void StateMachine::onRunRequest(const Command& command, uint32_t nowMs) {
     gui_->send(Cmd::ESP_run_accepted);
 }
 
-void StateMachine::onCalibrate(const Command& command, uint32_t nowMs) {
-    if (state_ == State::Idle) {
-        // Debug button: report what is known, without moving anything.
-        sendCalibrationData(forceAverage_.value());
-        return;
-    }
+// Run calibration, from Armed (the motor is stopped). See updateCalibration().
+void StateMachine::onCalibrate(uint32_t nowMs) {
     if (state_ != State::Armed) {
         report(Cmd::ESP_error, "Calibration refused: the machine is %s", stateName(state_));
         return;
     }
-    (void)command;
     enterMotionState(State::Calibration, nowMs);
-    calibrationPhase_ = CalibrationPhase::RestLoad;
-    forceMean_.reset();
+    restForce_.start(nowMs, CALIBRATION_SETTLE_MS, CALIBRATION_REST_SAMPLES);
+    calibrationPhase_ = CalibrationPhase::BottomForce;
+    report(Cmd::ESP_debug, "Calibration: measuring the bottom force");
 }
 
 // Accepted in any state: the window only depends on the load cell, and a
@@ -267,7 +263,7 @@ void StateMachine::onRunStart(uint32_t nowMs) {
 }
 
 // A refused TAR is answered with ESP_run_denied too: the GUI waits in its Tar
-// state for either that or the ESP_calibration_data at the end of the TAR.
+// state for either that or the ESP_tar_data at the end of the TAR.
 void StateMachine::onTarRequest(bool measureEmptyLoad, uint32_t nowMs) {
     const char* what = measureEmptyLoad ? "TAR" : "Bottom out";
     if (state_ != State::Idle) {
@@ -289,7 +285,8 @@ void StateMachine::onTarRequest(bool measureEmptyLoad, uint32_t nowMs) {
     tarMeasuresEmptyLoad_ = measureEmptyLoad;
     if (measureEmptyLoad) {
         report(Cmd::ESP_message, "TAR: measuring the empty load (the bench must be empty)");
-        tarPhase_ = TarPhase::Settle;
+        restForce_.start(nowMs, TAR_SETTLE_MS, TAR_EMPTY_LOAD_SAMPLES);
+        tarPhase_ = TarPhase::EmptyLoad;
     } else {
         report(Cmd::ESP_message, "Bottom out: looking for the stroke");
         startTarMotion(nowMs);
@@ -344,48 +341,74 @@ bool StateMachine::safetyChecksPass() {
     return true;
 }
 
+// Run calibration, with the shock mounted (so the yoke starts near the bottom):
+// bottom force at rest, the stroke from one slow cycle, then the top force,
+// averaged through the top at an even slower speed. See config.h.
 void StateMachine::updateCalibration(uint32_t nowMs) {
+    if (calibrationPhase_ != CalibrationPhase::BottomForce &&
+        nowMs - calibrationMotionStartMs_ >= CALIBRATION_TIMEOUT_MS) {
+        enterPanic(FaultReason::StrokeNotFound, "calibration not done within %lu s",
+                   (unsigned long)(CALIBRATION_TIMEOUT_MS / 1000));
+        return;
+    }
     switch (calibrationPhase_) {
-        case CalibrationPhase::RestLoad:
-            forceMean_.add(force_);
-            if (forceMean_.count() < CALIBRATION_REST_SAMPLES) {
+        case CalibrationPhase::BottomForce:
+            if (!restForce_.update(force_, nowMs)) {
                 return;
             }
-            restLoad_ = forceMean_.mean();
-            if (!drive_->setFrequency(CALIBRATION_CENTIHZ) || !drive_->runForward()) {
-                enterPanic(FaultReason::DriveFault, "drive command not sent");
+            bottomForce_ = restForce_.value();
+            if (!startMotor(CALIBRATION_CENTIHZ)) {
                 return;
             }
-            startStrokeSearch(nowMs);
+            calibrationMotionStartMs_ = nowMs;
+            turnFinder_.start(STROKE_TURN_HYSTERESIS_COUNTS, STROKE_MIN_RANGE_COUNTS);
             calibrationPhase_ = CalibrationPhase::FindStroke;
-            report(Cmd::ESP_debug, "Calibration: rest load %ld counts, looking for the stroke", (long)restLoad_);
+            report(Cmd::ESP_debug, "Calibration: bottom force %ld counts, looking for the stroke",
+                   (long)bottomForce_);
             return;
 
         case CalibrationPhase::FindStroke:
-            strokeFinder_.update(position_, nowMs);
-            switch (strokeFinder_.result(nowMs)) {
-                case StrokeFinder::Result::Searching:
-                    return;
-                case StrokeFinder::Result::Failed:
-                    enterPanic(FaultReason::StrokeNotFound, "range only %ld counts",
-                               (long)strokeFinder_.range());
-                    return;
-                case StrokeFinder::Result::Found:
-                    break;
+            turnFinder_.update(position_);
+            if (!turnFinder_.found()) {
+                return;
             }
-            strokeMin_ = strokeFinder_.min();
-            strokeMax_ = strokeFinder_.max();
-            strokeKnown_ = true;
-            stopMotor();
-            sendCalibrationData(restLoad_);
-            report(Cmd::ESP_message, "Calibration done: stroke %ld to %ld", (long)strokeMin_, (long)strokeMax_);
-            state_ = State::Armed;
-            armedSinceMs_ = nowMs;
+            setStroke(turnFinder_.min(), turnFinder_.max());
+            approach_.start(strokeMin_, strokeMax_, !BOTTOM_AT_HIGH_POSITION, CALIBRATION_SLOW_PERMILLE);
+            calibrationPhase_ = CalibrationPhase::ApproachTop;
+            report(Cmd::ESP_debug, "Calibration: stroke %ld to %ld, going to the top", (long)strokeMin_,
+                   (long)strokeMax_);
+            return;
+
+        case CalibrationPhase::ApproachTop:
+            if (!approach_.update(position_)) {
+                return;
+            }
+            if (!drive_->setFrequency(CALIBRATION_TOP_CENTIHZ)) {
+                enterPanic(FaultReason::DriveFault, "drive command not sent");
+                return;
+            }
+            topForceAverage_.start(strokeMin_, strokeMax_, !BOTTOM_AT_HIGH_POSITION,
+                                   CALIBRATION_TOP_WINDOW_PERMILLE);
+            calibrationPhase_ = CalibrationPhase::TopForce;
+            return;
+
+        case CalibrationPhase::TopForce:
+            if (!topForceAverage_.update(position_, force_)) {
+                return;
+            }
+            topForce_ = topForceAverage_.value();
+            finishCalibration(nowMs);
             return;
     }
 }
 
 void StateMachine::updateOperating(const SensorSample& sample, uint32_t nowMs) {
+    if (runPhase_ == RunPhase::BottomOut) { // the run's points are all out
+        if (updateBottomOut(nowMs) == Progress::Done) {
+            finishRun();
+        }
+        return;
+    }
     if (!runClockStarted_) {
         runStartUs_ = sample.timeUs;
         runClockStarted_ = true;
@@ -411,7 +434,8 @@ void StateMachine::updateOperating(const SensorSample& sample, uint32_t nowMs) {
                 case SpeedCheck::Reached:
                     break;
             }
-            // This is where the step's section of the run starts.
+            // The step's section starts with its first cycle (below); until
+            // then, from here.
             stepStartUs_ = runUs;
             cycleCounter_.start(strokeMin_, strokeMax_, CYCLE_LOW_PERCENT, CYCLE_HIGH_PERCENT);
             cyclesDone_ = 0;
@@ -421,8 +445,13 @@ void StateMachine::updateOperating(const SensorSample& sample, uint32_t nowMs) {
                    (unsigned)step.cycles);
             return;
 
-        case RunPhase::Counting:
-            if (cycleCounter_.update(position_)) {
+        case RunPhase::Counting: {
+            const bool started = cycleCounter_.started();
+            const bool completed = cycleCounter_.update(position_);
+            if (!started && cycleCounter_.started()) {
+                stepStartUs_ = runUs; // the section holds exactly the counted cycles
+            }
+            if (completed) {
                 cyclesDone_++;
                 lastCycleMs_ = nowMs;
                 report(Cmd::ESP_debug, "Step %u: cycle %u of %u", (unsigned)(stepIndex_ + 1),
@@ -435,24 +464,20 @@ void StateMachine::updateOperating(const SensorSample& sample, uint32_t nowMs) {
                            (unsigned)cyclesDone_, (unsigned)step.cycles);
             }
             return;
+        }
+
+        case RunPhase::BottomOut:
+            return; // handled above
     }
 }
 
 void StateMachine::updateTar(uint32_t nowMs) {
     switch (tarPhase_) {
-        case TarPhase::Settle:
-            if (nowMs - phaseStartMs_ >= TAR_SETTLE_MS) {
-                forceMean_.reset();
-                tarPhase_ = TarPhase::EmptyLoad;
-            }
-            return;
-
         case TarPhase::EmptyLoad:
-            forceMean_.add(force_);
-            if (forceMean_.count() < TAR_EMPTY_LOAD_SAMPLES) {
+            if (!restForce_.update(force_, nowMs)) {
                 return;
             }
-            emptyLoad_ = forceMean_.mean();
+            emptyLoad_ = restForce_.value();
             emptyLoadKnown_ = true;
             report(Cmd::ESP_message, "TAR: empty load %ld counts (~%ld N), looking for the stroke",
                    (long)emptyLoad_, newtons(emptyLoad_));
@@ -471,51 +496,16 @@ void StateMachine::updateTar(uint32_t nowMs) {
                 case StrokeFinder::Result::Found:
                     break;
             }
-            strokeMin_ = strokeFinder_.min();
-            strokeMax_ = strokeFinder_.max();
-            strokeKnown_ = true;
-            seekArmed_ = false;
-            startPhaseClock(nowMs);
-            tarPhase_ = TarPhase::SeekBottom;
+            setStroke(strokeFinder_.min(), strokeFinder_.max());
             report(Cmd::ESP_debug, "TAR: stroke %ld to %ld, going to the bottom", (long)strokeMin_,
                    (long)strokeMax_);
-            return;
-
-        case TarPhase::SeekBottom: {
-            // Stop on the way down, once past the stop point: the motor still
-            // turns a little while it decelerates.
-            const int32_t permille = bottomPermille(position_);
-            if (!seekArmed_) {
-                seekArmed_ = permille <= 500; // seen in the top half first
-            } else if (permille >= TAR_STOP_PERMILLE) {
-                stopMotor();
-                drive_->forgetRunningFrequency();
-                startPhaseClock(nowMs);
-                tarPhase_ = TarPhase::Stopping;
-                return;
-            }
-            if (nowMs - phaseStartMs_ >= TAR_SEEK_TIMEOUT_MS) {
-                enterPanic(FaultReason::CycleTimeout, "never reached the stop point");
-            }
-            return;
-        }
-
-        case TarPhase::Stopping:
-            switch (checkSpeed(0, nowMs)) {
-                case SpeedCheck::Waiting:
-                    return;
-                case SpeedCheck::TimedOut:
-                    enterPanic(FaultReason::DriveFault, "didn't stop");
-                    return;
-                case SpeedCheck::Reached:
-                    startPhaseClock(nowMs);
-                    tarPhase_ = TarPhase::StoppedSettle;
-                    return;
+            if (startBottomOut(nowMs)) {
+                tarPhase_ = TarPhase::BottomOut;
             }
             return;
 
-        case TarPhase::StoppedSettle:
-            if (nowMs - phaseStartMs_ >= TAR_STOPPED_SETTLE_MS) {
+        case TarPhase::BottomOut:
+            if (updateBottomOut(nowMs) == Progress::Done) {
                 finishTar();
             }
             return;
@@ -574,13 +564,38 @@ void StateMachine::finishStep(uint32_t endUs, uint32_t nowMs) {
         return;
     }
 
+    // Every step done: the run's points end here. Park the yoke at the bottom
+    // before telling the GUI the run is over (finishRun).
     const uint32_t dropped = points_->dropped();
-    goIdle();
     if (dropped > 0) {
         report(Cmd::ESP_error, "%lu points were dropped (link too slow)", (unsigned long)dropped);
     }
-    // After the last points, so the GUI has them all when it processes the run.
+    gui_->flushPoints();
+    if (startBottomOut(nowMs)) {
+        runPhase_ = RunPhase::BottomOut;
+    }
+}
+
+void StateMachine::finishRun() {
+    report(Cmd::ESP_debug, "Run done, bottomed out at %.1f%% of the stroke", bottomPercent());
+    goIdle();
+    // After the last points (flushPoints keeps the order), so the GUI has them
+    // all when it processes the run.
     gui_->flushPoints(Cmd::ESP_run_finished);
+}
+
+// =============================================================================
+// Calibration
+// =============================================================================
+
+void StateMachine::finishCalibration(uint32_t nowMs) {
+    stopMotor();
+    sendCalibrationData();
+    report(Cmd::ESP_message, "Calibration done: stroke %ld to %ld, bottom force %ld, top force %ld counts "
+           "(%lu samples at the top)", (long)strokeMin_, (long)strokeMax_, (long)bottomForce_, (long)topForce_,
+           (unsigned long)topForceAverage_.count());
+    state_ = State::Armed;
+    armedSinceMs_ = nowMs;
 }
 
 // =============================================================================
@@ -588,8 +603,7 @@ void StateMachine::finishStep(uint32_t endUs, uint32_t nowMs) {
 // =============================================================================
 
 bool StateMachine::startTarMotion(uint32_t nowMs) {
-    if (!drive_->setFrequency(TAR_CENTIHZ) || !drive_->runForward()) {
-        enterPanic(FaultReason::DriveFault, "drive command not sent");
+    if (!startMotor(TAR_CENTIHZ)) {
         return false;
     }
     startStrokeSearch(nowMs);
@@ -599,17 +613,92 @@ bool StateMachine::startTarMotion(uint32_t nowMs) {
 
 // The report says where the yoke really stopped, to tune TAR_STOP_PERMILLE.
 void StateMachine::finishTar() {
-    const double stoppedPercent = bottomPermille(position_) / 10.0;
     const double stopSentPercent = TAR_STOP_PERMILLE / 10.0;
     if (tarMeasuresEmptyLoad_) {
         report(Cmd::ESP_message, "TAR done: empty load %ld counts, stopped at %.1f%% of the stroke "
-               "(stop sent at %.1f%%, 100%% = bottom)", (long)emptyLoad_, stoppedPercent, stopSentPercent);
+               "(stop sent at %.1f%%, 100%% = bottom)", (long)emptyLoad_, bottomPercent(), stopSentPercent);
     } else {
         report(Cmd::ESP_message, "Bottom out done: stopped at %.1f%% of the stroke "
-               "(stop sent at %.1f%%, 100%% = bottom)", stoppedPercent, stopSentPercent);
+               "(stop sent at %.1f%%, 100%% = bottom)", bottomPercent(), stopSentPercent);
     }
-    sendCalibrationData(emptyLoadKnown_ ? emptyLoad_ : forceAverage_.value());
+    sendTarData(tarMeasuresEmptyLoad_ ? emptyLoad_ : forceAverage_.value());
     goIdle();
+}
+
+// =============================================================================
+// Bottom out
+// =============================================================================
+
+// Parks the yoke at the bottom: brings the motor to TAR_CENTIHZ (from whatever
+// it turns at), then stops it when the yoke passes TAR_STOP_PERMILLE on its
+// way down; the motor still turns a little while it decelerates. The stroke
+// must be known and the motor running.
+bool StateMachine::startBottomOut(uint32_t nowMs) {
+    if (!drive_->setFrequency(TAR_CENTIHZ)) {
+        enterPanic(FaultReason::DriveFault, "drive command not sent");
+        return false;
+    }
+    drive_->forgetRunningFrequency();
+    startPhaseClock(nowMs);
+    bottomOutPhase_ = BottomOutPhase::ReachSpeed;
+    return true;
+}
+
+StateMachine::Progress StateMachine::updateBottomOut(uint32_t nowMs) {
+    switch (bottomOutPhase_) {
+        case BottomOutPhase::ReachSpeed:
+            switch (checkSpeed(TAR_CENTIHZ, nowMs)) {
+                case SpeedCheck::Waiting:
+                    return Progress::Busy;
+                case SpeedCheck::TimedOut:
+                    enterPanic(FaultReason::DriveFault, "didn't reach %u.%02u Hz", (unsigned)(TAR_CENTIHZ / 100),
+                               (unsigned)(TAR_CENTIHZ % 100));
+                    return Progress::Failed;
+                case SpeedCheck::Reached:
+                    break;
+            }
+            approach_.start(strokeMin_, strokeMax_, BOTTOM_AT_HIGH_POSITION, TAR_STOP_PERMILLE);
+            startPhaseClock(nowMs);
+            bottomOutPhase_ = BottomOutPhase::Seek;
+            return Progress::Busy;
+
+        case BottomOutPhase::Seek:
+            if (approach_.update(position_)) {
+                stopMotor();
+                drive_->forgetRunningFrequency();
+                startPhaseClock(nowMs);
+                bottomOutPhase_ = BottomOutPhase::Stopping;
+                return Progress::Busy;
+            }
+            if (nowMs - phaseStartMs_ >= TAR_SEEK_TIMEOUT_MS) {
+                enterPanic(FaultReason::CycleTimeout, "never reached the bottom out stop point");
+                return Progress::Failed;
+            }
+            return Progress::Busy;
+
+        case BottomOutPhase::Stopping:
+            switch (checkSpeed(0, nowMs)) {
+                case SpeedCheck::Waiting:
+                    return Progress::Busy;
+                case SpeedCheck::TimedOut:
+                    enterPanic(FaultReason::DriveFault, "didn't stop");
+                    return Progress::Failed;
+                case SpeedCheck::Reached:
+                    startPhaseClock(nowMs);
+                    bottomOutPhase_ = BottomOutPhase::Settle;
+                    return Progress::Busy;
+            }
+            return Progress::Busy;
+
+        case BottomOutPhase::Settle:
+            return nowMs - phaseStartMs_ >= TAR_STOPPED_SETTLE_MS ? Progress::Done : Progress::Busy;
+    }
+    return Progress::Busy;
+}
+
+// Where the yoke is, in % of the stroke (100 = bottom).
+double StateMachine::bottomPercent() const {
+    return strokePermille(position_, strokeMin_, strokeMax_, BOTTOM_AT_HIGH_POSITION) / 10.0;
 }
 
 // =============================================================================
@@ -784,27 +873,53 @@ void StateMachine::startStrokeSearch(uint32_t nowMs) {
     strokeFinder_.start(nowMs, STROKE_MIN_RANGE_COUNTS, STROKE_MIN_TIME_MS, STROKE_SETTLE_MS, STROKE_TIMEOUT_MS);
 }
 
-// ESP_calibration_data: [stroke min][stroke max][force], 24-bit raw counts.
-void StateMachine::sendCalibrationData(int32_t force) {
-    uint8_t payload[9];
-    writeInt24BE(strokeKnown_ ? strokeMin_ : 0, payload);
-    writeInt24BE(strokeKnown_ ? strokeMax_ : 0, payload + 3);
-    writeInt24BE(clampInt24(force), payload + 6);
+void StateMachine::setStroke(int32_t strokeMin, int32_t strokeMax) {
+    strokeMin_ = strokeMin;
+    strokeMax_ = strokeMax;
+    strokeKnown_ = true;
+}
+
+// Sets the frequency and starts the motor (forward). Panic if the drive
+// commands can't be queued.
+bool StateMachine::startMotor(uint16_t centiHz) {
+    if (!drive_->setFrequency(centiHz) || !drive_->runForward()) {
+        enterPanic(FaultReason::DriveFault, "drive command not sent");
+        return false;
+    }
+    return true;
+}
+
+// ESP_calibration_data: [stroke min][stroke max][bottom force][top force], 24-bit raw counts.
+void StateMachine::sendCalibrationData() {
+    uint8_t payload[12];
+    writeInt24BE(strokeMin_, payload);
+    writeInt24BE(strokeMax_, payload + 3);
+    writeInt24BE(clampInt24(bottomForce_), payload + 6);
+    writeInt24BE(clampInt24(topForce_), payload + 9);
     gui_->send(Cmd::ESP_calibration_data, payload, sizeof(payload));
 }
 
+// ESP_tar_data: [stroke min][stroke max][force], 24-bit raw counts.
+void StateMachine::sendTarData(int32_t force) {
+    uint8_t payload[9];
+    writeInt24BE(strokeMin_, payload);
+    writeInt24BE(strokeMax_, payload + 3);
+    writeInt24BE(clampInt24(force), payload + 6);
+    gui_->send(Cmd::ESP_tar_data, payload, sizeof(payload));
+}
+
 // ESP_live_data: [position][stroke min][stroke max][force][temperature],
-// 24-bit raw counts. Zeros for what isn't known: no stroke before a TAR or a
-// calibration, no sensor values while the ADC isn't delivering.
+// 24-bit: raw counts, temperature in 0.01 degC. Zeros for what isn't known:
+// no stroke before a TAR or a calibration, no sensor values while the ADC
+// isn't delivering, no valid temperature read for a second.
 void StateMachine::sendLiveData(uint32_t nowMs) {
     const bool sensors = sensorAlive(nowMs);
-    const int32_t temperature = 0; // TODO: no temperature sensor yet
     uint8_t payload[15];
     writeInt24BE(sensors ? position_ : 0, payload);
     writeInt24BE(strokeKnown_ ? strokeMin_ : 0, payload + 3);
     writeInt24BE(strokeKnown_ ? strokeMax_ : 0, payload + 6);
     writeInt24BE(sensors ? clampInt24(forceAverage_.value()) : 0, payload + 9);
-    writeInt24BE(temperature, payload + 12);
+    writeInt24BE(clampInt24(temperature_), payload + 12);
     gui_->send(Cmd::ESP_live_data, payload, sizeof(payload));
 }
 
@@ -823,12 +938,3 @@ bool StateMachine::sensorAlive(uint32_t nowMs) const {
     return haveSample_ && nowMs - lastSampleMs_ <= SENSOR_STALL_MS;
 }
 
-// Where 'position' is along the stroke, in 0.1 %: 0 = top, 1000 = bottom.
-int32_t StateMachine::bottomPermille(int32_t position) const {
-    const int64_t span = (int64_t)strokeMax_ - strokeMin_;
-    if (span <= 0) {
-        return 0;
-    }
-    const int32_t fromMin = (int32_t)(((int64_t)position - strokeMin_) * 1000 / span);
-    return BOTTOM_AT_HIGH_POSITION ? fromMin : 1000 - fromMin;
-}

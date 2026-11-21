@@ -2,6 +2,8 @@
 //
 // Who does what:
 //   sensor_reader  task (core 0): ADS1256 -> newest force/position pair
+//   temperature_reader task (core 0, lowest priority): MLX90614 over I2C ->
+//                  newest temperature, every 200 ms
 //   gui_link       tasks (core 0): USB serial to the GUI, both directions
 //   drive_link     task (core 0): RS-485 Modbus to the TD350 motor drive
 //   loop()         (core 1, every 2 ms): GUI commands, drive answers and the
@@ -25,6 +27,7 @@
 #include "gui_link.h"
 #include "motor_drive.h"
 #include "sensor_reader.h"
+#include "temperature_reader.h"
 #include "state_machine.h"
 
 static_assert(configTICK_RATE_HZ >= 1000, "the 2 ms main loop needs a 1 kHz FreeRTOS tick");
@@ -35,6 +38,7 @@ namespace {
 constexpr int TASK_CORE = 0;
 constexpr unsigned LINK_TASK_PRIORITY = 2;
 constexpr unsigned SENSOR_TASK_PRIORITY = 5; // above the links: woken by DRDY, must read right away
+constexpr unsigned TEMPERATURE_TASK_PRIORITY = 1; // below everything: nothing waits for it
 constexpr uint32_t REBOOT_DELAY_MS = 300;    // lets the stop frames and the message go out
 constexpr uint32_t LATE_REPORT_PERIOD_MS = 1000;
 
@@ -43,6 +47,7 @@ GuiLink g_gui;
 DriveLink g_driveLink;
 MotorDrive g_drive;
 SensorReader g_sensors;
+TemperatureReader g_temperature;
 StateMachine g_stateMachine;
 
 TickType_t g_lastWake = 0;
@@ -73,6 +78,7 @@ void setup() {
     g_drive.stop(); // if the ESP restarted in the middle of a run, the drive is still turning
 
     g_sensors.begin(&g_gui, TASK_CORE, SENSOR_TASK_PRIORITY);
+    g_temperature.begin(TASK_CORE, TEMPERATURE_TASK_PRIORITY);
     g_stateMachine.begin(&g_gui, &g_drive, &g_points);
     g_stateMachine.prepareDrive(); // RS-485 timeout on
     pinMode(Pins::DRIVE_READY, INPUT); // input-only pin, pulled by the wiring
@@ -108,6 +114,7 @@ void loop() {
         g_stateMachine.onSample(sample, nowMs);
     }
 
+    g_stateMachine.setTemperature(g_temperature.centiCelsius());
     g_stateMachine.tick(nowMs);
     // Last, so it only sends when nothing else went to the drive. Here rather
     // than in a task of its own: if this loop stops, so does the keep-alive,

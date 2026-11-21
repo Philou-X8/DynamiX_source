@@ -23,16 +23,16 @@ public:
     // completes a cycle.
     //
     // A cycle is Low -> High -> Low. Counting only starts once the position
-    // has been seen Low, so a step that starts mid-stroke doesn't count a
-    // partial first cycle.
+    // has come down into Low from High, so a step that starts mid-stroke, or
+    // already inside Low (e.g. near the bottom after a calibration), doesn't
+    // count a partial first cycle.
     bool update(int32_t position) {
         switch (state_) {
             case Unknown:
                 if (position >= high_) {
                     state_ = High;
                 } else if (position <= low_) {
-                    state_ = Low;
-                    armed_ = true;
+                    state_ = Low; // already in Low: the cycle starts at the next way down
                 }
                 return false;
             case Low:
@@ -52,6 +52,10 @@ public:
         return false;
     }
 
+    // The first cycle has begun: the position came down into Low (the point
+    // where every counted cycle starts and ends).
+    bool started() const { return armed_; }
+
     int64_t lowThreshold() const { return low_; }
     int64_t highThreshold() const { return high_; }
 
@@ -60,5 +64,5 @@ private:
     int64_t low_ = 0;
     int64_t high_ = 0;
     Phase state_ = Unknown;
-    bool armed_ = false; // the position has been Low since start()
+    bool armed_ = false; // the position has come down into Low since start()
 };

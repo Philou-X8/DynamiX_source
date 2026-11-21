@@ -56,6 +56,12 @@ constexpr int8_t DRIVE_READY = 35;
 // wire reads HIGH = not ready (fails safe).
 constexpr uint8_t DRIVE_READY_LEVEL = LOW; // HIGH or LOW
 
+// MLX90614 IR thermometer (GY-906 board, with its own I2C pull-ups).
+// GPIO 0 is a boot strapping pin: if the sensor ever holds SCL low while the
+// ESP resets, the ESP starts in flash mode instead of running this firmware.
+constexpr int8_t TEMPERATURE_SDA = 15;
+constexpr int8_t TEMPERATURE_SCL = 0;
+
 } // namespace Pins
 
 // --- Links -------------------------------------------------------------------
@@ -113,6 +119,13 @@ constexpr bool INVERT_FORCE = true;
 // --- Sensor scale (only used in messages; everything on the wire is raw counts) --
 constexpr float FORCE_NEWTON_PER_COUNT = 0.004575f; // load cell, PGA 64 (GUI uses the same value)
 
+// --- Temperature (MLX90614, I2C) ---------------------------------------------------
+constexpr uint32_t TEMPERATURE_I2C_HZ = 50000;        // sensor allows 100 kHz; margin for long wires
+constexpr uint16_t TEMPERATURE_I2C_TIMEOUT_MS = 20;   // one read takes ~1 ms; a stuck bus gives up after this
+constexpr uint32_t TEMPERATURE_PERIOD_MS = HEARTBEAT_PERIOD_MS; // one read per live data message
+constexpr uint32_t TEMPERATURE_STALE_MS = 1000;       // no valid read for this long -> 0 (unknown)
+constexpr uint32_t TEMPERATURE_RECOVERY_FAILURES = 5; // failed reads in a row -> restart the I2C driver
+
 // --- Safety ----------------------------------------------------------------------
 // Force failsafe: stops the motor (Panic) when the raw load cell reading leaves
 // the window [min, max]. The window protects the load cell itself, so it is
@@ -164,8 +177,25 @@ constexpr uint32_t STROKE_SETTLE_MS = 2000;         // range unchanged (within 1
 constexpr uint32_t STROKE_TIMEOUT_MS = 20000;       // no stroke after this long -> Panic
 
 // --- Run calibration (GUI_calibrate while Armed) -----------------------------------
-constexpr uint16_t CALIBRATION_CENTIHZ = 1000;      // 10 Hz while looking for the stroke
-constexpr uint32_t CALIBRATION_REST_SAMPLES = 250;  // force averaged at rest (~0.5 s)
+// The shock was just installed, so the yoke starts near the bottom:
+//   1. motor stopped: the bottom force (settle, then average);
+//   2. a little over one cycle at CALIBRATION_CENTIHZ: the stroke, from where
+//      the yoke turns back at the top and at the bottom;
+//   3. on the way up, past CALIBRATION_SLOW_PERMILLE: down to CALIBRATION_TOP_CENTIHZ;
+//   4. the top force: averaged while the yoke goes through the top
+//      (CALIBRATION_TOP_WINDOW_PERMILLE), then the motor stops.
+constexpr uint32_t CALIBRATION_SETTLE_MS = 500;      // motor stopped, before the bottom force
+constexpr uint32_t CALIBRATION_REST_SAMPLES = 500;   // bottom force averaged over ~1 s
+constexpr uint16_t CALIBRATION_CENTIHZ = 200;        // TUNE: 2 Hz while finding the stroke
+constexpr uint16_t CALIBRATION_TOP_CENTIHZ = 100;    // TUNE: 1 Hz through the top
+constexpr int32_t CALIBRATION_SLOW_PERMILLE = 800;   // in 0.1 % of the stroke towards the top
+// TUNE: the top force is averaged within this distance of the top (0.1 % of
+// the stroke). Wider = more samples (less noise) but further from the end.
+constexpr int32_t CALIBRATION_TOP_WINDOW_PERMILLE = 20;
+// A turn back at an end counts once the position has come back by this much,
+// so noise can't make one (~0.5 mm on the LVIT).
+constexpr int32_t STROKE_TURN_HYSTERESIS_COUNTS = STROKE_MIN_RANGE_COUNTS / 2;
+constexpr uint32_t CALIBRATION_TIMEOUT_MS = 60000;   // TUNE: whole motion, from the start to the top force
 
 // --- Run --------------------------------------------------------------------------
 // Cycle counting thresholds, in % of the stroke: a cycle is the position going
@@ -177,7 +207,11 @@ constexpr uint32_t CYCLE_TIMEOUT_MS = 10000;
 // Armed (run accepted) but the run never started: back to Idle after this long.
 constexpr uint32_t ARMED_TIMEOUT_MS = 30000;
 
-// --- TAR / bottom out (GUI_TAR_request, GUI_bottom_out) ---------------------------------
+// --- TAR / bottom out (GUI_TAR_request, GUI_bottom_out, end of a run) ---------------------
+// TAR: empty load (motor stopped), then the stroke at TAR_CENTIHZ, then the
+// bottom out. The bottom out (also on its own, and after every run) brings the
+// motor to TAR_CENTIHZ, then stops it when the yoke passes TAR_STOP_PERMILLE
+// on its way down.
 constexpr uint32_t TAR_SETTLE_MS = 500;           // motor stopped, wait before measuring the empty load
 constexpr uint32_t TAR_EMPTY_LOAD_SAMPLES = 500;  // empty load averaged over ~1 s
 constexpr uint16_t TAR_CENTIHZ = 500;             // TUNE: 5 Hz, slow so the stop lands close to the target

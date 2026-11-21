@@ -24,6 +24,8 @@
 #include "../sequence_step.h"
 #include "../signal_filters.h"
 #include "../state_machine.h"
+#include "../stroke_tools.h"
+#include "../mlx90614.h"
 #include "fakes.h"
 
 // --- Minimal test framework ---------------------------------------------------
@@ -193,6 +195,110 @@ TEST(stroke_finder) {
     CHECK(std::abs(slow.max() - 700000) < 2000);
 }
 
+static int32_t crank(double turns) { // 0 = top (700000), 0.5 = bottom (100000)
+    return (int32_t)(400000 + 300000 * std::cos(turns * 2 * 3.14159265358979));
+}
+
+TEST(stroke_permille) {
+    CHECK(strokePermille(100000, 100000, 700000, false) == 1000);
+    CHECK(strokePermille(700000, 100000, 700000, false) == 0);
+    CHECK(strokePermille(700000, 100000, 700000, true) == 1000);
+    CHECK(strokePermille(400000, 100000, 700000, true) == 500);
+    CHECK(strokePermille(400000, 5, 5, true) == 0); // no stroke
+}
+
+TEST(rest_force_settles_then_averages) {
+    RestForce r;
+    r.start(1000, 500, 4);
+    CHECK(!r.update(999999, 1200)); // still settling: ignored
+    CHECK(!r.update(10, 1500));
+    CHECK(!r.update(20, 1502));
+    CHECK(!r.update(30, 1504));
+    CHECK(r.update(40, 1506));
+    CHECK(r.value() == 25);
+}
+
+TEST(end_approach_fires_once_on_the_way_to_the_end) {
+    // bottom = low positions, stop at 80 % towards it
+    EndApproach a;
+    a.start(100000, 700000, false, 800);
+    int fired = 0;
+    double firedAt = -1;
+    // starts at the bottom (past the point): must go round first
+    for (int i = 0; i <= 3000; i++) {
+        const double turns = 0.5 + i / 2000.0;
+        if (a.update(crank(turns))) {
+            fired++;
+            firedAt = turns;
+        }
+    }
+    CHECK(fired == 1);
+    // 80 % towards the bottom = position 220000, crossed on the way down at ~0.35 turn
+    CHECK(firedAt > 1.3 && firedAt < 1.4);
+}
+
+TEST(turn_stroke_finder) {
+    // from the bottom going up: found at the second turn (the bottom), a bit over 1 cycle
+    TurnStrokeFinder f;
+    f.start(10000, 20000);
+    double foundAt = -1;
+    for (int i = 0; i < 4000 && foundAt < 0; i++) {
+        const double turns = 0.5 + i / 2000.0;
+        f.update(crank(turns) + ((i * 7919) % 601) - 300); // +-300 counts of noise
+        if (f.found()) foundAt = turns;
+    }
+    CHECK(foundAt > 1.5 && foundAt < 1.6);
+    CHECK(std::abs(f.min() - 100000) < 400 && std::abs(f.max() - 700000) < 400);
+
+    // noise alone never makes a turn
+    TurnStrokeFinder still;
+    still.start(10000, 20000);
+    for (int i = 0; i < 5000; i++) still.update(400000 + ((i * 7919) % 6001) - 3000);
+    CHECK(!still.found());
+
+    // a stroke narrower than the minimum is ignored
+    TurnStrokeFinder small;
+    small.start(1000, 20000);
+    for (int i = 0; i < 5000; i++) small.update((int32_t)(400000 + 5000 * std::cos(i / 300.0)));
+    CHECK(!small.found());
+}
+
+TEST(end_force_average_is_symmetric_around_the_top) {
+    // force = static + damping (sign of the speed): the damping cancels around the top
+    EndForceAverage a;
+    a.start(100000, 700000, true, 20);
+    bool done = false;
+    int i = 0;
+    for (; i < 4000 && !done; i++) {
+        const double turns = 0.75 + i / 2000.0; // from mid-stroke, through the top (1.0)
+        const int32_t damping = (int32_t)(30000 * std::sin(turns * 2 * 3.14159265358979));
+        done = a.update(crank(turns), 50000 + damping);
+    }
+    CHECK(done);
+    CHECK(a.count() > 50);
+    CHECK(std::abs(a.value() - 50000) < 600);
+}
+
+TEST(mlx90614_checksum_and_conversion) {
+    // CRC-8/SMBUS check value
+    const uint8_t digits[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    CHECK(smbusCrc8(digits, 9) == 0xF4);
+
+    // 25.00 degC = 298.15 K = 14907.5 counts -> 14908 = 0x3A3C -> 25.01 degC
+    uint8_t reply[3] = {0x3C, 0x3A, 0};
+    const uint8_t covered[5] = {0xB4, 0x07, 0xB5, 0x3C, 0x3A};
+    reply[2] = smbusCrc8(covered, 5);
+    int32_t c = 0;
+    CHECK(mlxParseTemperature(MLX_ADDRESS, MLX_REG_OBJECT, reply, c) && c == 2501);
+    reply[2] ^= 0x01; // corrupted on the wire
+    CHECK(!mlxParseTemperature(MLX_ADDRESS, MLX_REG_OBJECT, reply, c));
+    // error flag (bit 15), valid checksum
+    uint8_t flagged[3] = {0x00, 0x80, 0};
+    const uint8_t coveredFlagged[5] = {0xB4, 0x07, 0xB5, 0x00, 0x80};
+    flagged[2] = smbusCrc8(coveredFlagged, 5);
+    CHECK(!mlxParseTemperature(MLX_ADDRESS, MLX_REG_OBJECT, flagged, c));
+}
+
 // --- Simulated machine ----------------------------------------------------------
 
 struct Machine {
@@ -213,7 +319,8 @@ struct Machine {
     // load cell
     int32_t emptyLoad = 14000;
     bool shockMounted = false;
-    int32_t shockForce = 60000;
+    int32_t shockForce = 60000;  // damping: follows the speed
+    int32_t springForce = 0;     // static: 0 at the top, all of it at the bottom
     uint32_t noise = 12345;
 
     void onFrame(const uint8_t* f, size_t, bool) {
@@ -264,7 +371,10 @@ struct Machine {
     }
     int32_t force() {
         int32_t f = emptyLoad + jitter(200);
-        if (shockMounted) f += (int32_t)(shockForce * std::sin(revolutions * 2 * 3.14159265358979));
+        if (shockMounted) {
+            f += (int32_t)(shockForce * std::sin(revolutions * 2 * 3.14159265358979));
+            f += (int32_t)(springForce * (1 - std::cos(revolutions * 2 * 3.14159265358979)) / 2);
+        }
         return f;
     }
 };
@@ -417,12 +527,13 @@ TEST(tar_measures_empty_load_and_bottoms_out) {
     CHECK(sim.count(Cmd::ESP_emergency) == 0);
     CHECK(sim.anyText(Cmd::ESP_message, "TAR done"));
     if (const GuiEvent* done = sim.last(Cmd::ESP_message)) std::printf("    %s\n", done->text().c_str());
-    const GuiEvent* cal = sim.last(Cmd::ESP_calibration_data);
-    CHECK(cal != nullptr && cal->payload.size() == 9);
-    if (cal) {
-        CHECK(std::abs(readInt24BE(&cal->payload[0]) - 100000) < 3000);
-        CHECK(std::abs(readInt24BE(&cal->payload[3]) - 700000) < 3000);
-        CHECK(std::abs(readInt24BE(&cal->payload[6]) - 14000) < 50);
+    CHECK(sim.count(Cmd::ESP_calibration_data) == 0);
+    const GuiEvent* tar = sim.last(Cmd::ESP_tar_data);
+    CHECK(tar != nullptr && tar->payload.size() == 9);
+    if (tar) {
+        CHECK(std::abs(readInt24BE(&tar->payload[0]) - 100000) < 3000);
+        CHECK(std::abs(readInt24BE(&tar->payload[3]) - 700000) < 3000);
+        CHECK(std::abs(readInt24BE(&tar->payload[6]) - 14000) < 50);
     }
     // stopped on the bottom side of the stroke
     const double turn = std::fmod(sim.m.revolutions, 1.0);
@@ -437,10 +548,16 @@ TEST(run_counts_the_requested_cycles) {
     CHECK(sim->count(Cmd::ESP_calibration_data) == 1);
     CHECK(sim->count(Cmd::ESP_run_starting) == 1);
     CHECK(sim->sm.state() == State::Operating);
+    CHECK(sim->runUntil([&] { return sim->count(Cmd::ESP_sequence_separator) == 2; }, 60000));
+    const size_t pointsAtLastStep = g_pushedPoints.size();
+    CHECK(sim->sm.state() == State::Operating); // bottoming out
     CHECK(sim->runUntilState(State::Idle, 60000));
     CHECK(sim->count(Cmd::ESP_emergency) == 0);
     CHECK(sim->count(Cmd::ESP_sequence_separator) == 2);
     CHECK(!sim->m.running);
+    CHECK(g_pushedPoints.size() <= pointsAtLastStep + 1); // no points while bottoming out
+    const double turn = std::fmod(sim->m.revolutions, 1.0);
+    CHECK(turn > 0.25 && turn < 0.75); // parked on the bottom side
 
     // run_finished goes out after the points (flush), after both separators
     // (live data may follow)
@@ -452,8 +569,8 @@ TEST(run_counts_the_requested_cycles) {
         CHECK(sep != nullptr && &*flush > sep);
     }
 
-    // each section holds the requested cycles: at least that many crank turns,
-    // and less than one more (the partial first one isn't counted)
+    // each section holds exactly the requested cycles: it starts and ends where
+    // the yoke comes down through the low threshold
     const int wanted[2] = {5, 3};
     int i = 0;
     for (const auto& e : g_guiEvents) {
@@ -462,7 +579,7 @@ TEST(run_counts_the_requested_cycles) {
         const uint32_t end = readUint32BE(&e.payload[4]);
         const double turns = sim->revolutionsAtRunUs(end) - sim->revolutionsAtRunUs(start);
         std::printf("    step %d: %.2f turns between %.3f s and %.3f s\n", i + 1, turns, start / 1e6, end / 1e6);
-        CHECK(turns >= wanted[i] - 0.05 && turns < wanted[i] + 1.05);
+        CHECK(std::abs(turns - wanted[i]) < 0.05);
         i++;
     }
     // points: raw values, times from 0, increasing
@@ -473,6 +590,83 @@ TEST(run_counts_the_requested_cycles) {
         increasing = increasing && g_pushedPoints[k].timeUs > g_pushedPoints[k - 1].timeUs;
     CHECK(increasing);
     if (g_failures) sim->printLog();
+}
+
+// ESP_calibration_data: [min][max][bottom force][top force]
+TEST(calibration_measures_the_stroke_and_both_forces) {
+    auto sim = tarredSim(); // the TAR parks the yoke near the bottom
+    sim->m.springForce = 40000;
+    const double startTurns = sim->m.revolutions;
+    const int32_t restForce = sim->m.force(); // what the load cell reads where it stands
+    sim->command(Cmd::GUI_run_request, {1});
+    sim->command(Cmd::GUI_calibrate);
+    CHECK(sim->sm.state() == State::Calibration);
+    sim->run(Config::CALIBRATION_SETTLE_MS);
+    CHECK(!sim->m.running); // nothing moves before the bottom force is in
+    bool slowSpeedSeen = false;
+    bool topSpeedSeen = false;
+    CHECK(sim->runUntil([&] {
+        slowSpeedSeen = slowSpeedSeen || sim->m.setHz == Config::CALIBRATION_CENTIHZ / 100.0;
+        topSpeedSeen = topSpeedSeen || sim->m.setHz == Config::CALIBRATION_TOP_CENTIHZ / 100.0;
+        return sim->sm.state() != State::Calibration;
+    }, 60000));
+    CHECK(sim->sm.state() == State::Armed);
+    CHECK(slowSpeedSeen && topSpeedSeen);
+    CHECK(sim->count(Cmd::ESP_emergency) == 0);
+    // a little over one cycle, then through the top
+    const double turns = sim->m.revolutions - startTurns;
+    std::printf("    calibration: %.2f turns\n", turns);
+    CHECK(turns > 1.4 && turns < 2.2);
+    const GuiEvent* cal = sim->last(Cmd::ESP_calibration_data);
+    CHECK(cal != nullptr && cal->payload.size() == 12);
+    if (cal) {
+        CHECK(std::abs(readInt24BE(&cal->payload[0]) - 100000) < 1500);
+        CHECK(std::abs(readInt24BE(&cal->payload[3]) - 700000) < 1500);
+        CHECK(std::abs(readInt24BE(&cal->payload[6]) - restForce) < 400); // bottom force
+        CHECK(std::abs(readInt24BE(&cal->payload[9]) - 14000) < 1500);    // top: no spring, no damping
+    }
+    CHECK(sim->count(Cmd::ESP_tar_data) == 0);
+    if (g_failures) sim->printLog();
+}
+
+TEST(calibration_from_anywhere_in_the_stroke) {
+    for (double start : {0.0, 0.2, 0.7}) {
+        auto sim = tarredSim();
+        sim->m.revolutions = std::floor(sim->m.revolutions) + start;
+        sim->command(Cmd::GUI_run_request, {1});
+        sim->command(Cmd::GUI_calibrate);
+        CHECK(sim->runUntil([&] { return sim->sm.state() != State::Calibration; }, 60000));
+        CHECK(sim->sm.state() == State::Armed);
+        const GuiEvent* cal = sim->last(Cmd::ESP_calibration_data);
+        CHECK(cal != nullptr);
+        if (cal) {
+            CHECK(std::abs(readInt24BE(&cal->payload[0]) - 100000) < 1500);
+            CHECK(std::abs(readInt24BE(&cal->payload[3]) - 700000) < 1500);
+        }
+    }
+}
+
+TEST(calibration_that_never_finds_the_stroke) {
+    auto sim = tarredSim();
+    sim->m.cyclesPerSecondPerHz = 0; // motor turns, yoke doesn't move
+    sim->command(Cmd::GUI_run_request, {1});
+    sim->command(Cmd::GUI_calibrate);
+    CHECK(sim->runUntilState(State::Panic, Config::CALIBRATION_TIMEOUT_MS + 5000));
+    CHECK(sim->anyText(Cmd::ESP_error, "PANIC: stroke not found (calibration not done within"));
+    CHECK(sim->count(Cmd::ESP_run_denied) == 1); // the GUI was waiting for the calibration
+    CHECK(!sim->m.running);
+}
+
+TEST(abort_while_the_run_bottoms_out) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 2}});
+    CHECK(sim->runUntil([&] { return sim->count(Cmd::ESP_sequence_separator) == 1; }, 60000));
+    sim->run(100);
+    CHECK(sim->sm.state() == State::Operating && sim->m.running);
+    sim->command(Cmd::GUI_abort);
+    CHECK(sim->sm.state() == State::Idle);
+    CHECK(!sim->m.running);
+    CHECK(sim->count(Cmd::ESP_run_finished) == 0);
 }
 
 TEST(single_spikes_dont_trip_the_failsafe) {
@@ -670,6 +864,7 @@ TEST(bottom_out_only) {
     sim.command(Cmd::GUI_bottom_out);
     CHECK(sim.runUntilState(State::Idle, 60000));
     CHECK(sim.anyText(Cmd::ESP_message, "Bottom out done"));
+    CHECK(sim.count(Cmd::ESP_tar_data) == 1);
     CHECK(sim.count(Cmd::ESP_emergency) == 0);
     const double turn = std::fmod(sim.m.revolutions, 1.0);
     CHECK(turn > 0.25 && turn < 0.75);
@@ -710,6 +905,18 @@ TEST(live_data_every_heartbeat_with_zeros_when_unknown) {
     const int before = sim.count(Cmd::ESP_live_data);
     sim.run(1000);
     CHECK(sim.count(Cmd::ESP_live_data) - before >= 4);
+}
+
+TEST(live_data_carries_the_temperature) {
+    Sim sim;
+    sim.sm.setTemperature(2345); // 23.45 degC
+    sim.run(400);
+    const GuiEvent* e = sim.last(Cmd::ESP_live_data);
+    CHECK(e != nullptr && liveValues(*e)[4] == 2345);
+    sim.sm.setTemperature(0); // unknown
+    sim.run(400);
+    e = sim.last(Cmd::ESP_live_data);
+    CHECK(e != nullptr && liveValues(*e)[4] == 0);
 }
 
 TEST(live_data_carries_the_stroke_after_a_tar) {
@@ -861,9 +1068,9 @@ TEST(force_sign) {
 TEST(debug_buttons_in_idle) {
     Sim sim;
     sim.run(500);
-    sim.command(Cmd::GUI_calibrate); // no payload: report, no motion
-    const GuiEvent* cal = sim.last(Cmd::ESP_calibration_data);
-    CHECK(cal != nullptr && std::abs(readInt24BE(&cal->payload[6]) - 14000) < 100);
+    sim.command(Cmd::GUI_calibrate); // only while Armed
+    CHECK(sim.anyText(Cmd::ESP_error, "Calibration refused: the machine is idle"));
+    CHECK(sim.count(Cmd::ESP_calibration_data) == 0);
     CHECK(sim.sm.state() == State::Idle && !sim.m.running);
 
     uint8_t frame[8];
