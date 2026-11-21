@@ -103,6 +103,13 @@ constexpr uint32_t ADC_CONVERSION_TIMEOUT_MS = 10;
 constexpr uint32_t ADC_MAX_FAILURES = 20;
 constexpr uint32_t ADC_RETRY_MS = 2000;  // wait between two start-up attempts
 
+// --- Load cell sign ---------------------------------------------------------------
+// true: the force is negated as soon as it is read, so compressing the shock
+// gives a positive force. Everything after the ADC (failsafe, TAR, live data,
+// points sent to the GUI) sees the flipped value. Same as swapping the load
+// cell's signal wires; set it back to false if they ever get swapped.
+constexpr bool INVERT_FORCE = true;
+
 // --- Sensor scale (only used in messages; everything on the wire is raw counts) --
 constexpr float FORCE_NEWTON_PER_COUNT = 0.004575f; // load cell, PGA 64 (GUI uses the same value)
 

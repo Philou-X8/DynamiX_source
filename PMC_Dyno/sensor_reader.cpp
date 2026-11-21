@@ -95,7 +95,7 @@ void SensorReader::sampleUntilFailure() {
             failures++;
             continue;
         }
-        publish(position, force, timeUs);
+        publish(position, orientForce(force), timeUs);
         failures = 0;
     }
 }

@@ -846,6 +846,18 @@ TEST(reboot_turns_the_drive_timeout_off) {
     CHECK(!sim.m.running);
 }
 
+TEST(force_sign) {
+    if (Config::INVERT_FORCE) {
+        CHECK(orientForce(1000) == -1000);
+        CHECK(orientForce(-1000) == 1000);
+        CHECK(orientForce(INT24_MIN) == INT24_MAX);
+        CHECK(orientForce(INT24_MAX) == -INT24_MAX);
+    } else {
+        CHECK(orientForce(1000) == 1000);
+        CHECK(orientForce(INT24_MIN) == INT24_MIN);
+    }
+}
+
 TEST(debug_buttons_in_idle) {
     Sim sim;
     sim.run(500);
