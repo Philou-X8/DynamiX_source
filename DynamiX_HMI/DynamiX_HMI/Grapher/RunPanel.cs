@@ -1,41 +1,41 @@
 ﻿using DynamiX_HMI.Analysis;
 using DynamiX_HMI.Config;
-using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace DynamiX_HMI.Grapher
 {
-    
-
     /// <summary>
-    /// The run list: each run is a node with its speeds under it. Ticking a run shows it in the graphs, ticking
-    /// a speed shows or hides that speed. The coloured square is the colour of the run in the graphs.
+    /// The run list: a group box with one RunItem per run, newest first. Each item has its own speeds and buttons.
+    /// A run is shown in the graphs when its Show Speeds box is ticked, and then each of its speeds can be hidden.
     /// </summary>
     public partial class RunPanel : UserControl
     {
-        private readonly Dictionary<int, int> swatchIndex = new Dictionary<int, int>();
-        private readonly Dictionary<RunEntry, TreeNode> nodes = new Dictionary<RunEntry, TreeNode>();
+        private readonly Dictionary<RunEntry, RunItem> items = new Dictionary<RunEntry, RunItem>();
         private readonly List<RunEntry> entries = new List<RunEntry>();
-        private readonly HashSet<string> expanded = new HashSet<string>();
-        private bool suppress;
         private bool changeQueued;
 
         /// <summary> Which runs or speeds are shown changed. </summary>
         public Action? SelectionChanged;
-        /// <summary> The Export button: write the summary of the shown runs. </summary>
+        /// <summary> The Export all button: one summary of every shown run. </summary>
         public Action? ExportRequested;
+        /// <summary> The Save Summary button of a run. </summary>
+        public Action<RunEntry>? ExportRunRequested;
+        /// <summary> The Save Points button of a run. </summary>
+        public Action<RunEntry>? SavePointsRequested;
         /// <summary> The Open button, with the chosen files. </summary>
         public Action<string[]>? OpenRequested;
         /// <summary> The Refresh button: read the runs folder again. </summary>
         public Action? RefreshRequested;
-        /// <summary> Delete a saved run (already confirmed). </summary>
+        /// <summary> Delete a saved run's file (already confirmed). </summary>
         public Action<RunEntry>? DeleteRequested;
 
         public RunPanel()
         {
             InitializeComponent();
         }
+
+        public IReadOnlyList<RunEntry> Entries => entries;
 
         // ------------------------------------------------------------------ events (wired in RunPanel.Designer.cs)
 
@@ -54,69 +54,30 @@ namespace DynamiX_HMI.Grapher
             RefreshRequested?.Invoke();
         }
 
-        private void tree_AfterCheck(object? sender, TreeViewEventArgs e)
-        {
-            OnChecked(e.Node!);
-        }
-
-        private void tree_AfterExpand(object? sender, TreeViewEventArgs e)
-        {
-            if (e.Node?.Tag is RunEntry r)
-            {
-                expanded.Add(r.Path);
-            }
-        }
-
-        private void tree_AfterCollapse(object? sender, TreeViewEventArgs e)
-        {
-            if (e.Node?.Tag is RunEntry r)
-            {
-                expanded.Remove(r.Path);
-            }
-        }
-
-        private void tree_NodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
-        {
-            tree.SelectedNode = e.Node;
-            if (e.Button == MouseButtons.Right)
-            {
-                BuildMenu(e.Node!).Show(tree, e.Location);
-            }
-        }
-
-        private void tree_MouseClick(object? sender, MouseEventArgs e)
-        {
-            // a click on the colour square picks a colour
-            TreeNode? n = tree.GetNodeAt(e.Location);
-            if (n != null && e.Button == MouseButtons.Left && SwatchBounds(n).Contains(e.Location))
-            {
-                PickColour(n);
-            }
-        }
-
-        public IReadOnlyList<RunEntry> Entries => entries;
-
         // ------------------------------------------------------------------ content
 
         /// <summary> Replaces the list (runs read from the folder). Keeps the ticks of runs still present. </summary>
         public void SetEntries(IEnumerable<RunEntry> newEntries)
         {
-            var wasChecked = new HashSet<string>(CheckedRuns().Where(r => r.Path.Length > 0).Select(r => r.Path));
+            var wasShown = new HashSet<string>(CheckedRuns().Where(r => r.Path.Length > 0).Select(r => r.Path));
             var inProgress = entries.Where(r => r.InProgress).ToList();
-            suppress = true;
-            tree.BeginUpdate();
-            tree.Nodes.Clear();
-            nodes.Clear();
+
+            flowRuns.SuspendLayout();
+            foreach (RunItem item in items.Values)
+            {
+                flowRuns.Controls.Remove(item);
+                item.Dispose();
+            }
+            items.Clear();
             entries.Clear();
             foreach (RunEntry r in inProgress.Concat(newEntries))
             {
                 if (inProgress.Contains(r) || !entries.Any(e => e.Path == r.Path))
                 {
-                    AddNode(r, wasChecked.Contains(r.Path) || r.InProgress, false);
+                    AddItem(r, wasShown.Contains(r.Path) || r.InProgress, false);
                 }
             }
-            tree.EndUpdate();
-            suppress = false;
+            flowRuns.ResumeLayout(true);
             AssignColours();
             QueueSelectionChanged();
         }
@@ -124,75 +85,78 @@ namespace DynamiX_HMI.Grapher
         /// <summary> A new run at the top of the list, shown right away. </summary>
         public void AddEntry(RunEntry entry)
         {
-            suppress = true;
-            AddNode(entry, true, true);
-            suppress = false;
+            flowRuns.SuspendLayout();
+            AddItem(entry, true, true);
+            flowRuns.ResumeLayout(true);
             AssignColours();
             QueueSelectionChanged();
         }
 
-        /// <summary> The run's speeds or name changed: rebuilds its node. </summary>
+        /// <summary> The run's speeds or state changed: builds its item again. </summary>
         public void UpdateEntry(RunEntry entry)
         {
-            if (!nodes.TryGetValue(entry, out TreeNode? node))
+            if (items.TryGetValue(entry, out RunItem? item))
             {
-                return;
+                item.Rebuild();
+                AssignColours();
             }
-            suppress = true;
-            bool wasExpanded = node.IsExpanded;
-            FillNode(node, entry);
-            if (wasExpanded || entry.InProgress)
-            {
-                node.Expand();
-            }
-            suppress = false;
-            AssignColours();
         }
 
         public void RemoveEntry(RunEntry entry)
         {
-            if (nodes.TryGetValue(entry, out TreeNode? node))
+            if (items.TryGetValue(entry, out RunItem? item))
             {
-                suppress = true;
-                node.Remove();
-                suppress = false;
-                nodes.Remove(entry);
+                flowRuns.Controls.Remove(item);
+                item.Dispose();
+                items.Remove(entry);
             }
             entries.Remove(entry);
             AssignColours();
             QueueSelectionChanged();
         }
 
+        /// <summary> The runs whose Show Speeds box is ticked, newest first. </summary>
         public IEnumerable<RunEntry> CheckedRuns()
         {
             foreach (RunEntry r in entries)
             {
-                if (nodes.TryGetValue(r, out TreeNode? n) && n.Checked)
+                if (items.TryGetValue(r, out RunItem? item) && item.IsShown)
                 {
                     yield return r;
                 }
             }
         }
 
-        private void AddNode(RunEntry entry, bool isChecked, bool atTop)
+        private void AddItem(RunEntry entry, bool shown, bool atTop)
         {
-            var node = new TreeNode(entry.Display) { Tag = entry, Checked = isChecked };
-            FillNode(node, entry);
+            var item = new RunItem { Margin = new Padding(3, 3, 3, 3) };
+            item.Bind(entry, shown);
+            item.SelectionChanged = () =>
+            {
+                AssignColours();
+                QueueSelectionChanged();
+            };
+            item.ColoursChanged = () =>
+            {
+                AssignColours();
+                QueueSelectionChanged();
+            };
+            item.SaveSummaryRequested = e => ExportRunRequested?.Invoke(e);
+            item.SavePointsRequested = e => SavePointsRequested?.Invoke(e);
+            item.RemoveRequested = ConfirmRemove;
+            item.DeleteRequested = e => DeleteRequested?.Invoke(e);
+
+            flowRuns.Controls.Add(item);
             if (atTop)
             {
-                tree.Nodes.Insert(0, node);
+                flowRuns.Controls.SetChildIndex(item, 0);
                 entries.Insert(0, entry);
             }
             else
             {
-                tree.Nodes.Add(node);
                 entries.Add(entry);
             }
-            nodes[entry] = node;
-            if (expanded.Contains(entry.Path) || entry.InProgress)
-            {
-                node.Expand();
-            }
+            items[entry] = item;
         }
 
         /// <summary> A speed by its target peak speed, e.g. "250 mm/s" (the drive frequency if it has none). </summary>
@@ -205,76 +169,26 @@ namespace DynamiX_HMI.Grapher
             return info.DriveHz.ToString("0.0") + " Hz";
         }
 
-        private static string SpeedText(StepEntry s, UnitSystem u)
-        {
-            string text = StepName(s.Info, u) + "   " + s.Info.DriveHz.ToString("0.0") + " Hz";
-            if (!double.IsNaN(s.Info.TempStartC))
-            {
-                text += "   " + s.Info.TempStartC.ToString("0.0") + " °C";
-            }
-            return text;
-        }
-
-        private void FillNode(TreeNode node, RunEntry entry)
-        {
-            node.Text = entry.Display + (entry.InProgress ? "  (running)" : "");
-            node.ToolTipText = entry.Path.Length > 0 ? entry.Path : "not saved yet";
-            node.Nodes.Clear();
-            UnitSystem u = AppSettings.Current.Units;
-            foreach (StepEntry s in entry.Steps)
-            {
-                node.Nodes.Add(new TreeNode(SpeedText(s, u)) { Tag = s, Checked = s.Visible });
-            }
-        }
-
-        /// <summary> Updates the speed lines after an analysis (peak speeds) or a change of units. </summary>
+        /// <summary> Updates the speed names after a change of units. </summary>
         public void RefreshTexts()
         {
-            suppress = true;
-            UnitSystem u = AppSettings.Current.Units;
-            foreach (var pair in nodes)
+            foreach (RunItem item in items.Values)
             {
-                foreach (TreeNode child in pair.Value.Nodes)
-                {
-                    if (child.Tag is StepEntry s)
-                    {
-                        child.Text = SpeedText(s, u);
-                    }
-                }
+                item.RefreshTexts();
             }
-            suppress = false;
         }
 
-        // ------------------------------------------------------------------ ticks and colours
-
-        private void OnChecked(TreeNode node)
-        {
-            if (suppress)
-            {
-                return;
-            }
-            if (node.Tag is StepEntry step)
-            {
-                step.Visible = node.Checked;
-                if (node.Checked && node.Parent != null && !node.Parent.Checked) // showing a speed shows its run
-                {
-                    suppress = true;
-                    node.Parent.Checked = true;
-                    suppress = false;
-                }
-            }
-            AssignColours();
-            QueueSelectionChanged();
-        }
+        // ------------------------------------------------------------------ selection and colours
 
         private void QueueSelectionChanged()
         {
-            if (changeQueued || !IsHandleCreated)
+            if (!IsHandleCreated)
             {
-                if (!IsHandleCreated)
-                {
-                    SelectionChanged?.Invoke();
-                }
+                SelectionChanged?.Invoke();
+                return;
+            }
+            if (changeQueued)
+            {
                 return;
             }
             changeQueued = true;
@@ -308,135 +222,31 @@ namespace DynamiX_HMI.Grapher
                 k++;
             }
             var shownSet = new HashSet<RunEntry>(shown);
-            foreach (var pair in nodes)
+            foreach (var pair in items)
             {
-                RunEntry r = pair.Key;
-                bool on = shownSet.Contains(r);
-                SetSwatch(pair.Value, on ? r.Shown : r.Custom);
-                foreach (TreeNode child in pair.Value.Nodes)
+                pair.Value.ApplyColours(shownSet.Contains(pair.Key));
+            }
+        }
+
+        // ------------------------------------------------------------------ remove and open
+
+        /// <summary> The X button: takes the run off the list. A run that was never saved would be lost: ask first. </summary>
+        private void ConfirmRemove(RunEntry entry)
+        {
+            if (entry.InProgress)
+            {
+                return;
+            }
+            if (entry.Path.Length == 0 && entry.Run.Samples.Count > 0)
+            {
+                string message = "This run was not saved (saving runs automatically is off).\n\n"
+                                 + "Removing it from the list loses its data. Use Save Points first to keep it.\n\nRemove it anyway?";
+                if (MessageBox.Show(this, message, "Remove run", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 {
-                    var s = (StepEntry)child.Tag!;
-                    SetSwatch(child, on ? s.Shown : s.Custom ?? r.Custom);
+                    return;
                 }
             }
-        }
-
-        private void SetSwatch(TreeNode n, Color? c)
-        {
-            n.ImageIndex = n.SelectedImageIndex = Swatch(c);
-        }
-
-        private int Swatch(Color? c)
-        {
-            int key = c.HasValue ? c.Value.ToArgb() : 0;
-            if (swatchIndex.TryGetValue(key, out int idx))
-            {
-                return idx;
-            }
-            var bmp = new Bitmap(14, 14);
-            using (Graphics g = Graphics.FromImage(bmp))
-            {
-                g.Clear(Color.Transparent);
-                if (c.HasValue)
-                {
-                    using var b = new SolidBrush(c.Value);
-                    g.FillRectangle(b, 1, 1, 12, 12);
-                }
-                using var pen = new Pen(c.HasValue ? Color.FromArgb(90, 90, 90) : Color.FromArgb(200, 200, 200));
-                g.DrawRectangle(pen, 1, 1, 11, 11);
-            }
-            swatches.Images.Add(bmp);
-            idx = swatches.Images.Count - 1;
-            swatchIndex[key] = idx;
-            return idx;
-        }
-
-        /// <summary> Where a node's colour square is drawn: just left of its text. </summary>
-        private Rectangle SwatchBounds(TreeNode n)
-        {
-            int w = swatches.ImageSize.Width + 4;
-            return new Rectangle(n.Bounds.Left - w - 1, n.Bounds.Top, w + 1, n.Bounds.Height);
-        }
-
-        private void PickColour(TreeNode node)
-        {
-            Color? current = node.Tag is RunEntry r ? r.Custom ?? r.Shown : node.Tag is StepEntry s ? s.Shown : null;
-            using var dialog = new ColorDialog { Color = current ?? PlotControl.Palette[0], FullOpen = true };
-            if (dialog.ShowDialog(this) == DialogResult.OK)
-            {
-                SetColour(node, dialog.Color);
-            }
-        }
-
-        private void SetColour(TreeNode node, Color? colour)
-        {
-            if (node.Tag is RunEntry r)
-            {
-                r.Custom = colour;
-            }
-            else if (node.Tag is StepEntry s)
-            {
-                s.Custom = colour;
-            }
-            AssignColours();
-            QueueSelectionChanged();
-        }
-
-        // ------------------------------------------------------------------ menu and files
-
-        private ContextMenuStrip BuildMenu(TreeNode node)
-        {
-            var menu = new ContextMenuStrip();
-            TreeNode runNode = node.Parent ?? node;
-            menu.Items.Add("Show all speeds", null, (s, e) => SetAllSteps(runNode, true));
-            menu.Items.Add("Hide all speeds", null, (s, e) => SetAllSteps(runNode, false));
-            menu.Items.Add("Colour...", null, (s, e) => PickColour(node));
-            menu.Items.Add("Default colour", null, (s, e) => SetColour(node, null));
-            if (runNode.Tag is RunEntry entry && entry.Path.Length > 0)
-            {
-                menu.Items.Add(new ToolStripSeparator());
-                menu.Items.Add("Show in folder", null, (s, e) => ShowInFolder(entry.Path));
-                menu.Items.Add("Delete file...", null, (s, e) => ConfirmDelete(entry));
-            }
-            return menu;
-        }
-
-        private void SetAllSteps(TreeNode runNode, bool on)
-        {
-            suppress = true;
-            foreach (TreeNode child in runNode.Nodes)
-            {
-                child.Checked = on;
-                ((StepEntry)child.Tag!).Visible = on;
-            }
-            if (on)
-            {
-                runNode.Checked = true;
-            }
-            suppress = false;
-            AssignColours();
-            QueueSelectionChanged();
-        }
-
-        private static void ShowInFolder(string path)
-        {
-            try
-            {
-                Process.Start("explorer.exe", "/select,\"" + path + "\"");
-            }
-            catch (Exception)
-            {
-                // no explorer: nothing to show
-            }
-        }
-
-        private void ConfirmDelete(RunEntry entry)
-        {
-            string message = "Delete this run file?\n\n" + entry.Path + "\n\nIt cannot be undone.";
-            if (MessageBox.Show(this, message, "Delete run", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
-            {
-                DeleteRequested?.Invoke(entry);
-            }
+            RemoveEntry(entry);
         }
 
         private void OpenFiles()

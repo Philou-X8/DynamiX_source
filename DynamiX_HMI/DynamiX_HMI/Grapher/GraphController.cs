@@ -31,6 +31,7 @@ namespace DynamiX_HMI.Grapher
         private List<(double targetMmS, double hz, int cycles)> plan = new List<(double, double, int)>();
         private readonly Queue<PendingSection> pending = new Queue<PendingSection>();
         private int sectionsSeen;
+        private int runCounter;                       // runs started since the program started, for the run names
         private double boundaryTempC = double.NaN;
 
         public GraphController(RunPanel runs, GraphPanel graph, Action<string> message)
@@ -41,7 +42,9 @@ namespace DynamiX_HMI.Grapher
             graphPanel.SetLiveBuffer(liveBuffer);
 
             runPanel.SelectionChanged = RefreshGraphs;
-            runPanel.ExportRequested = ExportSummary;
+            runPanel.ExportRequested = () => ExportSummary(runPanel.CheckedRuns().ToList());
+            runPanel.ExportRunRequested = run => ExportSummary(new List<RunEntry> { run });
+            runPanel.SavePointsRequested = SavePoints;
             runPanel.RefreshRequested = LoadHistory;
             runPanel.OpenRequested = OpenFiles;
             runPanel.DeleteRequested = DeleteRun;
@@ -82,7 +85,8 @@ namespace DynamiX_HMI.Grapher
             boundaryTempC = ToTemp(tempC);
 
             DateTime now = DateTime.Now;
-            var run = new TestRun { Name = "Run " + now.ToString("yyyy-MM-dd HH:mm:ss"), Date = now, Calibration = calibration };
+            runCounter++;
+            var run = new TestRun { Name = now.ToString("yyMMdd_HHmmss") + "_Run_" + runCounter, Date = now, Calibration = calibration };
             current = new RunEntry(run) { Loaded = true, InProgress = true };
             runPanel.AddEntry(current);
         }
@@ -375,10 +379,12 @@ namespace DynamiX_HMI.Grapher
             }
         }
 
-        /// <summary> The summary table (peak speeds and forces) of the ticked runs, as .xlsx or .csv. </summary>
-        private void ExportSummary()
+        /// <summary>
+        /// The summary table (peak speeds and forces of the shown speeds) of the given runs, as .xlsx or .csv:
+        /// one block per run, in one file.
+        /// </summary>
+        private void ExportSummary(List<RunEntry> shown)
         {
-            var shown = runPanel.CheckedRuns().ToList();
             foreach (RunEntry r in shown)
             {
                 EnsureLoaded(r);
@@ -414,6 +420,45 @@ namespace DynamiX_HMI.Grapher
             catch (Exception ex)
             {
                 say("Export failed: " + ex.Message);
+            }
+        }
+
+        /// <summary> Save Points: a copy of the run's raw data file wherever the user chooses. </summary>
+        private void SavePoints(RunEntry entry)
+        {
+            EnsureLoaded(entry);
+            if (entry.Run.Samples.Count == 0)
+            {
+                say("This run has no points to save");
+                return;
+            }
+            string folder = Directory.Exists(AppSettings.Current.RunsFolder) ? AppSettings.Current.RunsFolder : "";
+            using var dialog = new SaveFileDialog
+            {
+                Filter = "DynamiX run (*.csv)|*.csv",
+                FileName = entry.Path.Length > 0 ? Path.GetFileName(entry.Path) : Sanitize(entry.Display) + ".csv",
+                InitialDirectory = folder,
+            };
+            if (dialog.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+            try
+            {
+                string known = entry.Run.FilePath;
+                entry.Run.Save(dialog.FileName);
+                entry.Run.FilePath = known;
+                if (entry.Path.Length == 0) // a run that was not saved before now has a file
+                {
+                    entry.Path = dialog.FileName;
+                    entry.Run.FilePath = dialog.FileName;
+                    runPanel.UpdateEntry(entry);
+                }
+                say("Points saved: " + dialog.FileName);
+            }
+            catch (Exception ex)
+            {
+                say("Could not save the points: " + ex.Message);
             }
         }
 
