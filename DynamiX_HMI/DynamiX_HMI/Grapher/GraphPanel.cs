@@ -1,274 +1,350 @@
-﻿using DynamiX_HMI.Serial;
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
+﻿using DynamiX_HMI.Analysis;
+using DynamiX_HMI.Config;
 using System.Drawing;
-using System.Linq;
-using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace DynamiX_HMI.Grapher
 {
     /// <summary>
-    /// Passive view: it only draws what the GraphController gives it
-    /// (SetRecentPoints for the live views, SetRuns for the finished runs).
+    /// The graph area, a passive view (the GraphController gives it what to draw):
+    ///   Live        force and position of the last 10 s, with noise figures
+    ///   Force/Pos   force over position, every measured cycle of the shown speeds
+    ///   Force/Speed force over speed (the average cycle of each shown speed)
+    ///   Peak        force at peak speed against peak speed, one line per run, and the table behind it
+    ///   Time        the whole first shown run against time: force, position and speed
+    ///   Debug       the last points as text
+    /// Every plot zooms with the wheel or a box, pans with the right button, and shows the nearest point on hover.
     /// </summary>
-    public partial class GraphPanel : UserControl
+    public class GraphPanel : UserControl
     {
-        private const int RawWindowPoints = 128; // raw view: this many of the latest points (twice the old 64)
-        private const int DebugPoints = 16;      // debug tab: how many of the latest points are listed
-        private const int PlotMargin = 6;            // pixels kept free around the curves
+        private const int MaxTimePoints = 6000;
 
-        private List<DataPointUnit> recentPoints = new List<DataPointUnit>();
-        private List<RunCurve> runCurves = new List<RunCurve>();
-
-        // ranges of the runs drawn in the Force/Pos and Force/Spd views, set by SetRuns()
-        private bool hasRange;
-        private float minPos, maxPos, minForce, maxForce, minSpd, maxSpd;
+        private readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill };
+        private readonly PlotControl plotLiveF = NewPlot(), plotLiveX = NewPlot();
+        private readonly PlotControl plotFx = NewPlot(), plotFv = NewPlot(), plotPeak = NewPlot();
+        private readonly PlotControl plotTimeF = NewPlot(), plotTimeX = NewPlot(), plotTimeV = NewPlot();
+        private readonly Label labelStats = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6, 0, 0, 0), Text = "Waiting for data..." };
+        private readonly Label labelDebug = new Label { Dock = DockStyle.Fill, Font = new Font("Consolas", 9F), Padding = new Padding(6) };
+        private readonly DataGridView table = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            RowHeadersVisible = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            BackgroundColor = Color.White,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+        };
+        private readonly TabPage pageLive = new TabPage("Live");
+        private readonly System.Windows.Forms.Timer liveTimer = new System.Windows.Forms.Timer();
+        private LiveBuffer? live;
 
         public GraphPanel()
         {
-            InitializeComponent();
+            Dock = DockStyle.Fill;
 
-            // Draw in Paint handlers on double-buffered panels, so the graphs don't flicker
-            // and survive the window being covered or resized.
-            EnableDoubleBuffer(panelGraphRaw);
-            EnableDoubleBuffer(panelGraphForcePos);
-            EnableDoubleBuffer(panelGraphForceSpd);
-            panelGraphRaw.Paint += PaintRaw;
-            panelGraphForcePos.Paint += PaintForcePos;
-            panelGraphForceSpd.Paint += PaintForceSpd;
-        }
+            // Live: stats on top, force and position under each other
+            var liveLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            liveLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            liveLayout.Controls.Add(labelStats, 0, 0);
+            liveLayout.Controls.Add(plotLiveF, 0, 1);
+            liveLayout.Controls.Add(plotLiveX, 0, 2);
+            pageLive.Controls.Add(liveLayout);
 
-        private static void EnableDoubleBuffer(Control control)
-        {
-            // Control.DoubleBuffered is protected, so go through reflection
-            typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
-                ?.SetValue(control, true);
-        }
+            var pageFx = new TabPage("Force/Pos");
+            pageFx.Controls.Add(plotFx);
+            var pageFv = new TabPage("Force/Speed");
+            pageFv.Controls.Add(plotFv);
 
-        /// <summary>
-        /// Latest points received (oldest first). Refreshes the raw view and the debug tab.
-        /// The list is read, not copied: it must not change until the next call.
-        /// </summary>
-        public void SetRecentPoints(List<DataPointUnit> points)
-        {
-            recentPoints = points;
+            var pagePeak = new TabPage("Peak");
+            var peakSplit = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
+            peakSplit.Panel1.Controls.Add(plotPeak);
+            peakSplit.Panel2.Controls.Add(table);
+            pagePeak.Controls.Add(peakSplit);
+            peakSplit.SplitterDistance = Math.Max(100, peakSplit.Height * 2 / 3);
+            table.Columns.AddRange(
+                new DataGridViewTextBoxColumn { HeaderText = "Run" },
+                new DataGridViewTextBoxColumn { HeaderText = "Target" },
+                new DataGridViewTextBoxColumn { HeaderText = "Drive Hz" },
+                new DataGridViewTextBoxColumn { HeaderText = "Cycles" },
+                new DataGridViewTextBoxColumn { HeaderText = "Comp. speed" },
+                new DataGridViewTextBoxColumn { HeaderText = "Comp. force" },
+                new DataGridViewTextBoxColumn { HeaderText = "Reb. speed" },
+                new DataGridViewTextBoxColumn { HeaderText = "Reb. force" },
+                new DataGridViewTextBoxColumn { HeaderText = "Temp. °C" });
 
-            // same text as label2 of the master form: the last few points in plain text
-            StringBuilder sb = new StringBuilder();
-            int first = Math.Max(0, points.Count - DebugPoints);
-            for (int i = first; i < points.Count; i++)
+            var pageTime = new TabPage("Time");
+            var timeLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            timeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            for (int i = 0; i < 3; i++)
             {
-                sb.Append("Point ").Append(i - first)
-                  .Append(": t=").Append(points[i].time.ToString("0.000000"))
-                  .Append(" , f=").Append(Show(points[i].force))
-                  .Append(" , p=").Append(Show(points[i].position))
-                  .Append('\n');
+                timeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3F));
             }
-            labelDataDebug.Text = sb.ToString();
+            timeLayout.Controls.Add(plotTimeF, 0, 0);
+            timeLayout.Controls.Add(plotTimeX, 0, 1);
+            timeLayout.Controls.Add(plotTimeV, 0, 2);
+            pageTime.Controls.Add(timeLayout);
 
-            // raw view labels: min and max of the points currently drawn (the latest window)
-            int n = Math.Min(points.Count, RawWindowPoints);
-            if (n == 0)
+            var pageDebug = new TabPage("Debug");
+            pageDebug.Controls.Add(labelDebug);
+
+            tabs.TabPages.AddRange(new[] { pageLive, pageFx, pageFv, pagePeak, pageTime, pageDebug });
+            Controls.Add(tabs);
+
+            liveTimer.Tick += (s, e) => RefreshLive();
+            ApplySettings();
+            liveTimer.Start();
+            ShowRuns(Array.Empty<RunEntry>());
+        }
+
+        private static PlotControl NewPlot()
+        {
+            return new PlotControl { Dock = DockStyle.Fill };
+        }
+
+        /// <summary> The live graphs read this buffer on every refresh. </summary>
+        public void SetLiveBuffer(LiveBuffer buffer)
+        {
+            live = buffer;
+        }
+
+        /// <summary> Refresh period and units changed. </summary>
+        public void ApplySettings()
+        {
+            liveTimer.Interval = AppSettings.Current.ScreenRefreshMs;
+            UnitSystem u = AppSettings.Current.Units;
+            plotLiveF.Title = "Force";
+            plotLiveF.XLabel = "Time (s)";
+            plotLiveF.YLabel = "Force (" + Units.ForceUnit(u) + ")";
+            plotLiveX.Title = "Position";
+            plotLiveX.XLabel = "Time (s)";
+            plotLiveX.YLabel = "Position (" + Units.LengthUnit(u) + ")";
+            RefreshLive(true);
+        }
+
+        public void SetDebugText(string text)
+        {
+            labelDebug.Text = text;
+        }
+
+        // ------------------------------------------------------------------ Live tab
+
+        private void RefreshLive(bool force = false)
+        {
+            if (live == null || (!live.Dirty && !force) || tabs.SelectedTab != pageLive)
             {
-                label1.Text = "Force min and max: ? , ?";
-                label2.Text = "Position min and max: ? , ?";
+                return;
+            }
+            live.Dirty = false;
+            live.Trim();
+            UnitSystem u = AppSettings.Current.Units;
+            live.Snapshot(out double[] t, out double[] f, out double[] x);
+            plotLiveF.Series.Clear();
+            plotLiveX.Series.Clear();
+            if (t.Length > 1)
+            {
+                plotLiveF.Series.Add(new PlotSeries { X = t, Y = f.Select(v => Units.Force(v, u)).ToArray(), Color = PlotControl.Palette[1], Width = 1f });
+                plotLiveX.Series.Add(new PlotSeries { X = t, Y = x.Select(v => Units.Length(v, u)).ToArray(), Color = PlotControl.Palette[0], Width = 1f });
+            }
+            plotLiveF.Invalidate();
+            plotLiveX.Invalidate();
+
+            if (live.TryGetStats(out double fm, out double fs, out double pm, out double ps, out int n))
+            {
+                labelStats.Text = string.Format("Last {0:0.#} s ({1} samples):   force {2:0.00} ± {3:0.00} {4} (std)    position {5:0.000} ± {6:0.0000} {7} (std)",
+                    LiveBuffer.StatsWindowS, n, Units.Force(fm, u), Units.Force(fs, u), Units.ForceUnit(u),
+                    Units.Length(pm, u), Units.Length(ps, u), Units.LengthUnit(u));
             }
             else
             {
-                int start = points.Count - n;
-                float fMin = points[start].force, fMax = fMin;
-                float pMin = points[start].position, pMax = pMin;
-                for (int i = start + 1; i < points.Count; i++)
-                {
-                    fMin = Math.Min(fMin, points[i].force);
-                    fMax = Math.Max(fMax, points[i].force);
-                    pMin = Math.Min(pMin, points[i].position);
-                    pMax = Math.Max(pMax, points[i].position);
-                }
-                label1.Text = "Force min and max: " + Show(fMin) + " , " + Show(fMax);
-                label2.Text = "Position min and max: " + Show(pMin) + " , " + Show(pMax);
+                labelStats.Text = "Waiting for data...";
             }
-
-            panelGraphRaw.Invalidate();
         }
 
-        /// <summary> Runs to draw in the Force/Pos and Force/Spd views, scaled to fit all of them. </summary>
-        public void SetRuns(List<RunCurve> curves)
-        {
-            runCurves = curves;
+        // ------------------------------------------------------------------ analysed runs
 
-            hasRange = false;
-            foreach (RunCurve curve in curves)
+        /// <summary> Draws the runs that are ticked in the run list (their visible speeds). Results must be up to date. </summary>
+        public void ShowRuns(IReadOnlyList<RunEntry> runs)
+        {
+            AppSettings set = AppSettings.Current;
+            UnitSystem u = set.Units;
+            bool abs = set.AbsoluteSpeed;
+            string fu = Units.ForceUnit(u), lu = Units.LengthUnit(u), su = Units.SpeedUnit(u);
+
+            plotFx.Series.Clear();
+            plotFv.Series.Clear();
+            plotPeak.Series.Clear();
+            plotTimeF.Series.Clear();
+            plotTimeX.Series.Clear();
+            plotTimeV.Series.Clear();
+            table.Rows.Clear();
+
+            plotFx.Title = set.RemoveStaticForce ? "Force vs position, every cycle (static force removed)" : "Force vs position, every cycle (as measured)";
+            plotFx.XLabel = "Position above bottom (" + lu + ")";
+            plotFx.YLabel = "Force (" + fu + "), + compression";
+            plotFv.Title = set.AverageCycles ? "Force vs speed, average cycle" : "Force vs speed, every cycle";
+            plotFv.XLabel = (abs ? "Speed magnitude (" : "Speed (") + su + ")" + (abs ? "" : ", + compression");
+            plotFv.YLabel = "Force (" + fu + "), + compression";
+            plotPeak.Title = "Force at peak speed";
+            plotPeak.XLabel = "Peak speed (" + su + ")";
+            plotPeak.YLabel = "Force at peak speed (" + fu + ")";
+            plotTimeF.Title = "Whole run";
+            plotTimeF.XLabel = "Time (s)";
+            plotTimeF.YLabel = "Force (" + fu + "), as measured";
+            plotTimeX.XLabel = "Time (s)";
+            plotTimeX.YLabel = "Position above bottom (" + lu + ")";
+            plotTimeV.XLabel = "Time (s)";
+            plotTimeV.YLabel = "Speed (" + su + "), + compression";
+
+            Func<double, double> speed = v => Units.Length(abs ? Math.Abs(v) : v, u);
+            bool single = runs.Count == 1;
+
+            foreach (RunEntry run in runs)
             {
-                for (int i = 0; i < curve.Points.Count; i++)
+                Color runColor = run.Shown;
+                var steps = run.Steps.Where(s => s.Visible && s.Result != null).OrderBy(s => s.Info.DriveHz).ToList();
+                foreach (StepEntry step in steps)
                 {
-                    DataPointUnit p = curve.Points[i];
-                    float v = curve.Velocities[i];
-                    if (!hasRange)
+                    StepResult r = step.Result!;
+                    string stepName = RunPanel.StepName(step.Info, u);
+                    string label = single ? stepName : run.Display + "  " + stepName;
+                    bool first = true;
+                    foreach (ProcessedCycle c in r.Cycles)
                     {
-                        minPos = maxPos = p.position;
-                        minForce = maxForce = p.force;
-                        minSpd = maxSpd = v;
-                        hasRange = true;
-                        continue;
+                        plotFx.Series.Add(new PlotSeries
+                        {
+                            X = c.X.Select(v => Units.Length(v, u)).ToArray(),
+                            Y = c.F.Select(v => Units.Force(v, u)).ToArray(),
+                            Color = step.Shown, Name = first ? label : null, Width = 1.2f,
+                        });
+                        first = false;
                     }
-                    minPos = Math.Min(minPos, p.position);
-                    maxPos = Math.Max(maxPos, p.position);
-                    minForce = Math.Min(minForce, p.force);
-                    maxForce = Math.Max(maxForce, p.force);
-                    minSpd = Math.Min(minSpd, v);
-                    maxSpd = Math.Max(maxSpd, v);
+                    if (set.AverageCycles)
+                    {
+                        ProcessedCycle avg = Analyzer.AverageCycles(r.Cycles);
+                        plotFv.Series.Add(new PlotSeries
+                        {
+                            X = avg.V.Select(speed).ToArray(), Y = avg.F.Select(v => Units.Force(v, u)).ToArray(),
+                            Color = step.Shown, Name = label,
+                        });
+                    }
+                    else
+                    {
+                        first = true;
+                        foreach (ProcessedCycle c in r.Cycles)
+                        {
+                            plotFv.Series.Add(new PlotSeries
+                            {
+                                X = c.V.Select(speed).ToArray(), Y = c.F.Select(v => Units.Force(v, u)).ToArray(),
+                                Color = step.Shown, Name = first ? label : null, Width = 1.2f,
+                            });
+                            first = false;
+                        }
+                    }
+
+                    table.Rows.Add(run.Display, stepName, step.Info.DriveHz.ToString("0.0"), r.CycleCount,
+                        speed(r.CompPeakVel).ToString("0.#"), Units.Force(r.CompForceAtPeakVel, u).ToString("0.#"),
+                        Units.Length(Math.Abs(r.RebPeakVel), u).ToString("0.#"), Units.Force(r.RebForceAtPeakVel, u).ToString("0.#"),
+                        double.IsNaN(step.Info.TempStartC) ? "" : step.Info.TempStartC.ToString("0.0"));
                 }
+                AddPeakSeries(run, steps, runColor, u, abs);
             }
 
-            labelRangeX.Text = hasRange
-                ? "Position min and max: " + Show(minPos) + " , " + Show(maxPos)
-                : "Position min and max: ? , ?";
-            labelRangeY.Text = hasRange
-                ? "Force min and max: " + Show(minForce) + " , " + Show(maxForce)
-                : "Force min and max: ? , ?";
-            labelSpdRangeX.Text = hasRange
-                ? "Speed min and max: " + Show(minSpd) + " , " + Show(maxSpd)
-                : "Speed min and max: ? , ?";
-            labelSpdRangeY.Text = labelRangeY.Text;
+            if (runs.Count > 0)
+            {
+                ShowWholeRun(runs.FirstOrDefault(r => r.Loaded) ?? runs[0], set);
+            }
 
-            panelGraphForcePos.Invalidate();
-            panelGraphForceSpd.Invalidate();
+            foreach (PlotControl p in new[] { plotFx, plotFv, plotPeak, plotTimeF, plotTimeX, plotTimeV })
+            {
+                p.Invalidate();
+            }
         }
 
-        //
-        // Raw view: force and position over time (index of the point = time at a steady sample rate)
-        //
-        private void PaintRaw(object? sender, PaintEventArgs e)
+        private void AddPeakSeries(RunEntry run, List<StepEntry> steps, Color color, UnitSystem u, bool abs)
         {
-            Graphics g = e.Graphics;
-            g.Clear(Color.White);
-
-            int n = Math.Min(recentPoints.Count, RawWindowPoints);
-            if (n < 2)
+            if (steps.Count == 0)
             {
                 return;
             }
-            int first = recentPoints.Count - n;
-            int width = panelGraphRaw.ClientSize.Width;
-            int height = panelGraphRaw.ClientSize.Height;
-
-            // The window always spans the full width; the newest point is at the right edge,
-            // so while the buffer fills up the curve slides in from the right.
-            float stepX = (width - 1) / (float)(RawWindowPoints - 1);
-            float offsetX = (RawWindowPoints - n) * stepX;
-
-            // each curve is scaled to its own min and max
-            using Pen penForce = new Pen(Color.Red, 2);
-            using Pen penPosition = new Pen(Color.Blue, 2);
-            DrawRawCurve(g, penForce, first, n, p => p.force, stepX, offsetX, height);
-            DrawRawCurve(g, penPosition, first, n, p => p.position, stepX, offsetX, height);
-        }
-
-        private void DrawRawCurve(Graphics g, Pen pen, int first, int n, Func<DataPointUnit, float> value,
-                                  float stepX, float offsetX, int height)
-        {
-            float min = float.MaxValue;
-            float max = float.MinValue;
-            for (int i = 0; i < n; i++)
+            Func<double, double> speed = v => Units.Length(abs ? Math.Abs(v) : v, u);
+            if (abs)
             {
-                float v = value(recentPoints[first + i]);
-                min = Math.Min(min, v);
-                max = Math.Max(max, v);
+                // two branches from the origin: compression above zero force, rebound below, both at positive speed
+                var cx = new List<double> { 0 }; var cy = new List<double> { 0 };
+                var rx = new List<double> { 0 }; var ry = new List<double> { 0 };
+                foreach (StepEntry s in steps)
+                {
+                    StepResult r = s.Result!;
+                    cx.Add(speed(r.CompPeakVel)); cy.Add(Units.Force(r.CompForceAtPeakVel, u));
+                    rx.Add(speed(r.RebPeakVel)); ry.Add(Units.Force(r.RebForceAtPeakVel, u));
+                }
+                plotPeak.Series.Add(new PlotSeries { X = cx.ToArray(), Y = cy.ToArray(), Color = color, Markers = true, Name = run.Display, Width = 2f });
+                plotPeak.Series.Add(new PlotSeries { X = rx.ToArray(), Y = ry.ToArray(), Color = color, Markers = true, Width = 2f });
             }
-
-            PointF[] pts = new PointF[n];
-            for (int i = 0; i < n; i++)
+            else
             {
-                pts[i] = new PointF(offsetX + i * stepX,
-                                    ToPixel(value(recentPoints[first + i]), min, max, height, flip: true));
+                var px = new List<double>(); var py = new List<double>();
+                foreach (StepEntry s in steps.OrderByDescending(q => q.Info.DriveHz))
+                {
+                    px.Add(speed(s.Result!.RebPeakVel)); py.Add(Units.Force(s.Result.RebForceAtPeakVel, u));
+                }
+                px.Add(0); py.Add(0);
+                foreach (StepEntry s in steps)
+                {
+                    px.Add(speed(s.Result!.CompPeakVel)); py.Add(Units.Force(s.Result.CompForceAtPeakVel, u));
+                }
+                plotPeak.Series.Add(new PlotSeries { X = px.ToArray(), Y = py.ToArray(), Color = color, Markers = true, Name = run.Display, Width = 2f });
             }
-            g.DrawLines(pen, pts);
         }
 
-        //
-        // Force/Pos view: force (Y) over position (X), both scaled to the observed min and max
-        //
-        private void PaintForcePos(object? sender, PaintEventArgs e)
+        /// <summary> Force, position and speed of the whole run against time, as measured. </summary>
+        private void ShowWholeRun(RunEntry entry, AppSettings set)
         {
-            PaintForceOver(e.Graphics, panelGraphForcePos, (curve, i) => curve.Points[i].position, minPos, maxPos,
-                           zeroLine: false);
-        }
-
-        //
-        // Force/Spd view: force (Y) over velocity (X), same scaling. A vertical line marks
-        // zero speed (one side is compression, the other rebound).
-        //
-        private void PaintForceSpd(object? sender, PaintEventArgs e)
-        {
-            PaintForceOver(e.Graphics, panelGraphForceSpd, (curve, i) => curve.Velocities[i], minSpd, maxSpd,
-                           zeroLine: true);
-        }
-
-        /// <summary>
-        /// Every visible run: force (Y) over xValue (X), scaled to [minX, maxX] and the force range.
-        /// zeroLine: a light vertical line at X = 0 (under the curves), when 0 is in the range.
-        /// </summary>
-        private void PaintForceOver(Graphics g, Panel panel, Func<RunCurve, int, float> xValue, float minX, float maxX,
-                                    bool zeroLine)
-        {
-            g.Clear(Color.White);
-
-            if (!hasRange)
+            TestRun run = entry.Run;
+            int n = run.Samples.Count;
+            if (n < 10)
             {
                 return;
             }
-            int width = panel.ClientSize.Width;
-            int height = panel.ClientSize.Height;
+            UnitSystem u = set.Units;
+            RunCalibration cal = run.Calibration;
+            bool known = cal.Known;
+            double dir = known ? cal.Direction : 1.0;
+            double bottom = known ? cal.BottomMm : run.Samples.Min(s => s.X);
 
-            if (zeroLine && minX < 0 && maxX > 0)
+            var t = new double[n];
+            var x = new double[n];
+            for (int i = 0; i < n; i++)
             {
-                float x = ToPixel(0f, minX, maxX, width, flip: false);
-                g.DrawLine(Pens.LightGray, x, 0, x, height);
+                t[i] = run.Samples[i].T;
+                x[i] = run.Samples[i].X;
             }
+            double fs = (n - 1) / Math.Max(1e-9, t[n - 1] - t[0]);
+            double[] xf = Signal.LowPassZeroPhase(x, set.FilterCutoffHz, fs);
+            int halfWindow = Math.Max(2, (int)Math.Round(set.VelocityWindowMs / 1000.0 * fs / 2.0));
+            double[] v = Signal.Derivative(t, xf, halfWindow);
+            double sign = (set.TopIsCompression ? 1.0 : -1.0) * dir;
 
-            foreach (RunCurve curve in runCurves)
+            int stride = Math.Max(1, n / MaxTimePoints);
+            int m = (n + stride - 1) / stride;
+            var tt = new double[m]; var ff = new double[m]; var xx = new double[m]; var vv = new double[m];
+            for (int i = 0; i < m; i++)
             {
-                if (curve.Points.Count < 2)
-                {
-                    continue;
-                }
-                PointF[] pts = new PointF[curve.Points.Count];
-                for (int i = 0; i < pts.Length; i++)
-                {
-                    pts[i] = new PointF(ToPixel(xValue(curve, i), minX, maxX, width, flip: false),
-                                        ToPixel(curve.Points[i].force, minForce, maxForce, height, flip: true));
-                }
-                using Pen pen = new Pen(curve.Color, 2);
-                g.DrawLines(pen, pts);
+                int k = i * stride;
+                tt[i] = t[k];
+                ff[i] = Units.Force(run.Samples[k].F, u);
+                xx[i] = Units.Length(dir * (x[k] - bottom), u);
+                vv[i] = Units.Length(sign * v[k], u);
             }
-        }
-
-        /// <summary> A value for the labels: mm and N to 2 decimals, raw counts (conversion off) unchanged. </summary>
-        private static string Show(float value)
-        {
-            return value.ToString("0.##");
-        }
-
-        /// <summary>
-        /// Maps value from [min, max] to [PlotMargin, size - PlotMargin] pixels.
-        /// flip is for Y, where pixel 0 is the top and larger values must go up.
-        /// A flat curve (min == max) is drawn in the middle.
-        /// </summary>
-        private static float ToPixel(float value, float min, float max, int size, bool flip)
-        {
-            float usable = size - 1 - 2 * PlotMargin;
-            float ratio = max == min ? 0.5f : (value - min) / (max - min);
-            if (flip)
-            {
-                ratio = 1f - ratio;
-            }
-            return PlotMargin + ratio * usable;
+            plotTimeF.Series.Add(new PlotSeries { X = tt, Y = ff, Color = PlotControl.Palette[1], Width = 1f });
+            plotTimeX.Series.Add(new PlotSeries { X = tt, Y = xx, Color = PlotControl.Palette[0], Width = 1f });
+            plotTimeV.Series.Add(new PlotSeries { X = tt, Y = vv, Color = PlotControl.Palette[2], Width = 1f });
+            plotTimeF.Title = "Whole run: " + entry.Display;
         }
     }
 }

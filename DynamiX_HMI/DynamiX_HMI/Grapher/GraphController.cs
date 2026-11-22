@@ -1,310 +1,448 @@
-﻿using DynamiX_HMI.Serial;
-using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using DynamiX_HMI.Analysis;
+using DynamiX_HMI.Config;
+using DynamiX_HMI.Serial;
+using System.Diagnostics;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace DynamiX_HMI.Grapher
 {
-    /// <summary> The points and color of one visible run, as handed to the graphs. </summary>
-    public class RunCurve
-    {
-        public List<DataPointUnit> Points;
-        public List<float> Velocities; // one per point (Velocity.Compute), for the Force/Speed graph
-        public Color Color;
-
-        public RunCurve(List<DataPointUnit> points, List<float> velocities, Color color)
-        {
-            Points = points;
-            Velocities = velocities;
-            Color = color;
-        }
-    }
-
-    public struct DataPointUnit
-    {
-        public DataPointUnit(float t, float f, float p)
-        {
-            time = t;
-            force = f;
-            position = p;
-        }
-        public float time; // in second
-        public float force; // in Neuton
-        public float position; // in mm
-
-        /// <summary>
-        /// Point and separator timestamps (microseconds since the run started) to seconds.
-        /// Both go through this, so the same timestamp always gives the same float.
-        /// </summary>
-        public static float MicrosToSeconds(int micros)
-        {
-            return micros * 1e-6f;
-        }
-    }
-
-    public struct DataCalibration
-    {
-        public DataCalibration()
-        {
-            emptyForce = 0;
-            bottomForce = 0;
-            topForce = 0;
-            bottomPosition = 0;
-            topPosition = 0;
-            stroke = 0;
-            temperatureStart = 0;
-            temperatureEnd = 0;
-        }
-        public DataCalibration(float emptyF, float botF, float topF, float botP, float topP)
-        {
-            emptyForce = emptyF;
-            bottomForce = botF;
-            topForce = topF;
-            bottomPosition = botP;
-            topPosition = topP;
-            stroke = topPosition - bottomPosition;
-            temperatureStart = 0;
-            temperatureEnd = 0;
-        }
-        public DataCalibration(float emptyF, float botF, float topF, float botP, float topP, float tempS, float tempE)
-        {
-            emptyForce = emptyF;
-            bottomForce = botF;
-            topForce = topF;
-            bottomPosition = botP;
-            topPosition = topP;
-            stroke = topPosition - bottomPosition;
-            temperatureStart = tempS;
-            temperatureEnd = tempE;
-        }
-
-        public float emptyForce;
-        public float bottomForce;
-        public float topForce;
-        public float bottomPosition;
-        public float topPosition;
-        public float stroke;
-        public float temperatureStart;
-        public float temperatureEnd;
-    };
-
     /// <summary>
-    /// Owns the received points and decides what becomes a run. It drives the two views:
-    /// the GraphPanel (raw view, Force/Pos view, debug text) and the RunPanel (list of runs).
+    /// Owns the data of the graphs. Raw points come in, the ESP32's separators cut them into speeds, and each
+    /// run (a sweep of speeds) is kept in the RunPanel list, analysed, and saved as a raw data file.
+    /// It drives the two views: the GraphPanel (what is drawn) and the RunPanel (which runs and speeds).
     /// Everything runs on the UI thread.
     /// </summary>
     internal class GraphController
     {
-        private const int RecentCapacity = 256;       // points kept for the raw and debug views
-        private const int MaxBufferedPoints = 50000;  // safety cap if separators never arrive
+        private const int MaxRunSamples = 3_000_000;   // safety cap, about 80 minutes at full rate
+        private const int DebugPoints = 16;            // debug tab: how many of the latest points are listed
+
+        private record PendingSection(int Index, double Start, double End, double TempStart, double TempEnd);
 
         private readonly RunPanel runPanel;
         private readonly GraphPanel graphPanel;
+        private readonly Action<string> say;
+        private readonly LiveBuffer liveBuffer = new LiveBuffer();
+        private readonly Stopwatch clock = Stopwatch.StartNew();
+        private double lastPointArrivalS = double.NegativeInfinity;
 
-        // Points received during the current run that haven't been cut into a section yet
-        private List<DataPointUnit> buffer = new List<DataPointUnit>();
+        // the run being measured
+        private RunEntry? current;
+        private List<(double targetMmS, double hz, int cycles)> plan = new List<(double, double, int)>();
+        private readonly Queue<PendingSection> pending = new Queue<PendingSection>();
+        private int sectionsSeen;
+        private double boundaryTempC = double.NaN;
 
-        // The last points received, kept apart from 'buffer' so the live views don't
-        // go blank when a section is cut out of it.
-        private List<DataPointUnit> recent = new List<DataPointUnit>();
-
-        // Sections announced by the ESP (start and end time, s) that are waiting for their points
-        private List<(float start, float end)> pendingSections = new List<(float start, float end)>();
-        private List<DataCalibration> pendingMetadata = new List<DataCalibration>();
-
-        private int runNumber = 0;
-        private bool runInProgress = false; // BeginRun() was called and FinishRun() wasn't yet
-        private int sectionCount = 0;    // separators received this run
-        private int sectionsHandled = 0; // of those, the ones already cut out of the buffer
-
-
-        public GraphController(RunPanel sidePanel, GraphPanel graph)
+        public GraphController(RunPanel runs, GraphPanel graph, Action<string> message)
         {
-            runPanel = sidePanel;
+            runPanel = runs;
             graphPanel = graph;
+            say = message;
+            graphPanel.SetLiveBuffer(liveBuffer);
+
+            runPanel.SelectionChanged = RefreshGraphs;
+            runPanel.ExportRequested = ExportSummary;
+            runPanel.RefreshRequested = LoadHistory;
+            runPanel.OpenRequested = OpenFiles;
+            runPanel.DeleteRequested = DeleteRun;
         }
 
         /// <summary> True between BeginRun() and FinishRun(): points are arriving for a run that isn't closed yet. </summary>
-        public bool RunInProgress => runInProgress;
+        public bool RunInProgress => current != null;
 
-        /// <summary> Start of a run: forget the points and sections of the previous one. </summary>
-        public void BeginRun()
+        // ------------------------------------------------------------------ live data
+
+        /// <summary> ESP_live_data: the 5 Hz readings. Only drawn when no full rate points are coming (idle). </summary>
+        public void AddLiveData(int rawPosition, int rawForce)
         {
-            runInProgress = true;
-            buffer = new List<DataPointUnit>();
-            pendingSections.Clear();
-            pendingMetadata.Clear();
-            sectionCount = 0;
-            sectionsHandled = 0;
-            runNumber++;
+            double now = clock.Elapsed.TotalSeconds;
+            if (now - lastPointArrivalS > 1.0)
+            {
+                AppSettings set = AppSettings.Current;
+                liveBuffer.Add(now, set.ForceN(rawForce), set.PositionMm(rawPosition));
+            }
         }
 
-        /// <summary> Clears the live points (Reset button). Finished runs are kept. </summary>
-        public void ResetPoints()
+        // ------------------------------------------------------------------ a run
+
+        /// <summary>
+        /// Start of a run: a new entry at the top of the run list. 'sequencePlan' is what was sent to the ESP32 (one
+        /// entry per speed, in order), 'calibration' what it measured before the run, 'tempC' the damper temperature
+        /// (0 = none).
+        /// </summary>
+        public void BeginRun(List<(double targetMmS, double hz, int cycles)> sequencePlan, RunCalibration calibration, double tempC)
         {
-            buffer = new List<DataPointUnit>();
-            recent = new List<DataPointUnit>();
-            pendingSections.Clear();
-            pendingMetadata.Clear();
-            sectionCount = 0;
-            sectionsHandled = 0;
-            graphPanel.SetRecentPoints(recent);
+            if (current != null)
+            {
+                FinishRun(); // never happens in the normal flow: be safe
+            }
+            plan = sequencePlan;
+            pending.Clear();
+            sectionsSeen = 0;
+            boundaryTempC = ToTemp(tempC);
+
+            DateTime now = DateTime.Now;
+            var run = new TestRun { Name = "Run " + now.ToString("yyyy-MM-dd HH:mm:ss"), Date = now, Calibration = calibration };
+            current = new RunEntry(run) { Loaded = true, InProgress = true };
+            runPanel.AddEntry(current);
         }
 
-        public void AddPoints(List<DataPointUnit> dataPoints)
+        /// <summary> Raw points from the ESP32: converted with the sensor calibration, drawn live, and kept for the run. </summary>
+        public void AddRawPoints(List<DataPointRaw> rawPoints)
         {
-            buffer.AddRange(dataPoints);
-            if (buffer.Count > MaxBufferedPoints)
+            if (rawPoints.Count == 0)
             {
-                buffer.RemoveRange(0, buffer.Count - MaxBufferedPoints);
+                return;
+            }
+            AppSettings set = AppSettings.Current;
+            var samples = new List<Sample>(rawPoints.Count);
+            foreach (DataPointRaw p in rawPoints)
+            {
+                samples.Add(new Sample(p.time * 1e-6, set.PositionMm(p.position), set.ForceN(p.force)));
             }
 
-            recent.AddRange(dataPoints);
-            if (recent.Count > RecentCapacity)
+            // live view: the newest point lands on the arrival time of the packet
+            double now = clock.Elapsed.TotalSeconds;
+            double newest = samples[samples.Count - 1].T;
+            foreach (Sample s in samples)
             {
-                recent.RemoveRange(0, recent.Count - RecentCapacity);
+                liveBuffer.Add(now - (newest - s.T), s.F, s.X);
             }
-            graphPanel.SetRecentPoints(recent);
+            lastPointArrivalS = now;
+            graphPanel.SetDebugText(DebugText(samples));
 
-            EmitReadySections(false);
+            if (current != null && current.Run.Samples.Count < MaxRunSamples)
+            {
+                current.Run.AddSamples(samples);
+                EmitReadySections(false);
+            }
         }
 
         /// <summary>
-        /// Handles ESP_sequence_separator: payload is the start timestamp (4 bytes) and the
-        /// end timestamp (4 bytes) of a finished section, big-endian, in microseconds like the raw points.
+        /// ESP_sequence_separator: payload is the start and the end timestamp (4 bytes each, big-endian, microseconds
+        /// like the raw points) of a finished speed. 'tempC' is the damper temperature now (0 = none).
         /// Returns false if the payload is too short.
         /// </summary>
-        public bool TryAddSequenceSeparator(CommandPacket command)
+        public bool TryAddSequenceSeparator(CommandPacket command, double tempC)
         {
             if (command.payload.Length < 8)
             {
                 return false;
             }
             byte[] b = Encoding.Latin1.GetBytes(command.payload);
-            float start = DataPointUnit.MicrosToSeconds((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
-            float end = DataPointUnit.MicrosToSeconds((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]);
-
-            sectionCount++;
-            pendingSections.Add((start, end));
-            EmitReadySections(false);
-            return true;
-        }
-
-        public bool TryAddSequenceSeparator(CommandPacket command, DataCalibration metadata)
-        {
-            if (command.payload.Length < 8)
+            double start = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) * 1e-6;
+            double end = ((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]) * 1e-6;
+            if (current == null)
             {
-                return false;
+                return true; // nothing to attach it to
             }
-            byte[] b = Encoding.Latin1.GetBytes(command.payload);
-            float start = DataPointUnit.MicrosToSeconds((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
-            float end = DataPointUnit.MicrosToSeconds((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]);
 
-            sectionCount++;
-            pendingSections.Add((start, end));
-            pendingMetadata.Add(metadata);
+            double endTemp = ToTemp(tempC);
+            pending.Enqueue(new PendingSection(sectionsSeen, start, end, boundaryTempC, endTemp));
+            sectionsSeen++;
+            boundaryTempC = endTemp; // the end of this speed is the start of the next
             EmitReadySections(false);
             return true;
         }
 
         /// <summary>
-        /// Cuts out every announced section whose points have arrived. The separator travels
-        /// on a faster path than the data and can show up before the last points of its
-        /// section, so a section waits until a point at or after its end timestamp is buffered.
-        /// force: cut out what is there regardless (end of run).
+        /// Cuts out every announced speed whose points have arrived. The separator travels on a faster path than the
+        /// data and can show up before the last points of its section, so a section waits until a point at or after
+        /// its end is stored. force: take what is there regardless (end of the run).
         /// </summary>
         private void EmitReadySections(bool force)
         {
-            bool added = false;
-
-            while (pendingSections.Count > 0)
+            if (current == null)
             {
-                (float start, float end) = pendingSections[0];
-                bool dataArrived = buffer.Count > 0 && buffer[buffer.Count - 1].time >= end;
+                return;
+            }
+            bool added = false;
+            while (pending.Count > 0)
+            {
+                PendingSection s = pending.Peek();
+                List<Sample> samples = current.Run.Samples;
+                bool dataArrived = samples.Count > 0 && samples[samples.Count - 1].T >= s.End;
                 if (!dataArrived && !force)
                 {
                     break; // later sections end later, so none of them can be ready either
                 }
+                pending.Dequeue();
 
-                DataCalibration meta = new DataCalibration();
-                if (pendingMetadata.Count > 0)
+                (double targetMmS, double hz, int cycles) = s.Index < plan.Count ? plan[s.Index] : (0.0, 0.0, 0);
+                var info = new StepInfo
                 {
-                    meta = pendingMetadata[0];
-                }
-
-                // sections are numbered in the order their separators arrived
-                sectionsHandled++;
-                List<DataPointUnit> points = buffer.Where(p => p.time >= start && p.time <= end).ToList();
-                if (points.Count > 0)
-                {
-                    string name = "Run " + runNumber + " step " + sectionsHandled;
-                    //runPanel.AddItem(new RunItem(runPanel, name, points, UpdateDisplayRuns));
-                    runPanel.AddItem(new RunItem(runPanel, name, points, meta, UpdateDisplayRuns));
-                    added = true;
-                }
-
-                // everything before the end of this section is no longer needed
-                buffer.RemoveAll(p => p.time < end);
-                pendingSections.RemoveAt(0);
-                if (pendingMetadata.Count > 0)
-                {
-                    pendingMetadata.RemoveAt(0);
-                }
+                    Index = s.Index, TargetSpeedMmS = targetMmS, DriveHz = hz, PlannedCycles = cycles,
+                    StartS = s.Start, EndS = s.End, TempStartC = s.TempStart, TempEndC = s.TempEnd,
+                };
+                current.Run.Steps.Add(info);
+                current.Run.AssignStep(s.Index, s.Start, s.End);
+                current.Steps.Add(new StepEntry(current, info));
+                added = true;
             }
 
             if (added)
             {
-                UpdateDisplayRuns();
+                Reanalyze(current);
+                runPanel.UpdateEntry(current);
+                RefreshGraphs();
             }
         }
 
-        public List<DataPointUnit> GetLatest(int count)
-        {
-            if (recent.Count == 0)
-            {
-                return Enumerable.Repeat(new DataPointUnit(0, 0, 0), count).ToList();
-            }
-
-            if (recent.Count < count)
-            {
-                int n_filler = count - recent.Count;
-                List<DataPointUnit> ret = Enumerable.Repeat(recent[0], n_filler).ToList();
-                ret.AddRange(recent);
-                return ret;
-            }
-
-            return recent.GetRange(recent.Count - count, count);
-        }
-
-        public int GetPointsCount()
-        {
-            return buffer.Count;
-        }
-
-        /// <summary>
-        /// End of a run: cut out the sections still waiting for their points. If the ESP
-        /// sent no separators at all, the whole run becomes a single item instead.
-        /// </summary>
+        /// <summary> End of a run (or the link dropped): analyse, save the raw data, and close the entry. </summary>
         public void FinishRun()
         {
-            runInProgress = false;
-            EmitReadySections(true);
-
-            if (sectionCount == 0 && buffer.Count > 0)
+            if (current == null)
             {
-                string displayName = "Run " + runNumber + " result";
-                runPanel.AddItem(new RunItem(runPanel, displayName, buffer.ToList(), UpdateDisplayRuns));
+                return;
+            }
+            RunEntry entry = current;
+            EmitReadySections(true);
+            current = null;
+            entry.InProgress = false;
+
+            if (entry.Run.Samples.Count == 0)
+            {
+                runPanel.RemoveEntry(entry);
+                return;
             }
 
-            UpdateDisplayRuns();
+            Reanalyze(entry);
+            if (AppSettings.Current.AutoSaveRuns)
+            {
+                try
+                {
+                    string path = TestRun.MakeFileName(AppSettings.Current.RunsFolder, entry.Run.Date);
+                    entry.Run.Save(path);
+                    entry.Path = path;
+                    say("Run saved: " + path);
+                }
+                catch (Exception ex)
+                {
+                    say("Could not save the run: " + ex.Message);
+                }
+            }
+            runPanel.UpdateEntry(entry);
+            RefreshGraphs();
         }
 
-        /// <summary> Redraws the Force/Pos view from the runs that are currently shown. </summary>
-        public void UpdateDisplayRuns()
+        // ------------------------------------------------------------------ analysis and drawing
+
+        /// <summary> Analyses a run with the current settings and hands each speed its result. </summary>
+        private void Reanalyze(RunEntry entry)
         {
-            graphPanel.SetRuns(runPanel.GetVisibleCurves());
+            try
+            {
+                entry.Results = entry.Run.Analyze(AppSettings.Current);
+            }
+            catch (Exception ex)
+            {
+                entry.Results = new List<StepResult>();
+                say("Analysis failed for " + entry.Display + ": " + ex.Message);
+            }
+            foreach (StepEntry step in entry.Steps)
+            {
+                step.Result = entry.Results.FirstOrDefault(r => r.Info.Index == step.Info.Index);
+            }
+        }
+
+        /// <summary> Reads the samples of a run listed from its header only, and analyses it. </summary>
+        private void EnsureLoaded(RunEntry entry)
+        {
+            if (entry.Loaded)
+            {
+                return;
+            }
+            entry.Loaded = true; // even when it fails: no endless retries
+            try
+            {
+                TestRun full = TestRun.Load(entry.Path);
+                entry.Run = full;
+                Reanalyze(entry);
+                runPanel.RefreshTexts();
+            }
+            catch (Exception ex)
+            {
+                say("Could not read " + Path.GetFileName(entry.Path) + ": " + ex.Message);
+            }
+        }
+
+        /// <summary> Redraws the graphs from the ticked runs. </summary>
+        public void RefreshGraphs()
+        {
+            var shown = runPanel.CheckedRuns().ToList();
+            foreach (RunEntry r in shown)
+            {
+                EnsureLoaded(r);
+            }
+            graphPanel.ShowRuns(shown);
+        }
+
+        /// <summary> The settings changed (filter, units, calibration...): analyse every loaded run again. </summary>
+        public void SettingsChanged()
+        {
+            foreach (RunEntry r in runPanel.Entries)
+            {
+                if (r.Loaded)
+                {
+                    Reanalyze(r);
+                }
+            }
+            runPanel.RefreshTexts();
+            graphPanel.ApplySettings();
+            RefreshGraphs();
+        }
+
+        // ------------------------------------------------------------------ run list and files
+
+        /// <summary> Lists the runs in the runs folder (newest first), reading only their headers. </summary>
+        public void LoadHistory()
+        {
+            var list = new List<RunEntry>();
+            string folder = AppSettings.Current.RunsFolder;
+            try
+            {
+                if (Directory.Exists(folder))
+                {
+                    foreach (string path in Directory.GetFiles(folder, "*.csv").OrderByDescending(p => p))
+                    {
+                        RunEntry? entry = ReadHeader(path);
+                        if (entry != null)
+                        {
+                            list.Add(entry);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                say("Could not read the runs folder: " + ex.Message);
+            }
+            runPanel.SetEntries(list);
+        }
+
+        private RunEntry? ReadHeader(string path)
+        {
+            if (!TestRun.IsRunFile(path))
+            {
+                return null; // summaries, calibration history, other CSV files
+            }
+            try
+            {
+                TestRun header = TestRun.LoadHeader(path);
+                var entry = new RunEntry(header);
+                foreach (StepInfo info in header.Steps)
+                {
+                    entry.Steps.Add(new StepEntry(entry, info));
+                }
+                return entry;
+            }
+            catch (Exception ex)
+            {
+                say("Could not read " + Path.GetFileName(path) + ": " + ex.Message);
+                return null;
+            }
+        }
+
+        private void OpenFiles(string[] paths)
+        {
+            foreach (string path in paths)
+            {
+                RunEntry? existing = runPanel.Entries.FirstOrDefault(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    continue;
+                }
+                RunEntry? entry = ReadHeader(path);
+                if (entry == null)
+                {
+                    say(Path.GetFileName(path) + " is not a DynamiX run file");
+                    continue;
+                }
+                runPanel.AddEntry(entry);
+            }
+        }
+
+        private void DeleteRun(RunEntry entry)
+        {
+            try
+            {
+                File.Delete(entry.Path);
+                runPanel.RemoveEntry(entry);
+            }
+            catch (Exception ex)
+            {
+                say("Could not delete the file: " + ex.Message);
+            }
+        }
+
+        /// <summary> The summary table (peak speeds and forces) of the ticked runs, as .xlsx or .csv. </summary>
+        private void ExportSummary()
+        {
+            var shown = runPanel.CheckedRuns().ToList();
+            foreach (RunEntry r in shown)
+            {
+                EnsureLoaded(r);
+            }
+            var tests = shown
+                .Select(r => new KeyValuePair<string, List<StepResult>>(
+                    r.Display, r.Steps.Where(s => s.Visible && s.Result != null).Select(s => s.Result!).ToList()))
+                .Where(t => t.Value.Count > 0)
+                .ToList();
+            if (tests.Count == 0)
+            {
+                say("Nothing to export: tick a run that has measured speeds");
+                return;
+            }
+
+            string folder = AppSettings.Current.RunsFolder;
+            Directory.CreateDirectory(folder);
+            using var dialog = new SaveFileDialog
+            {
+                Filter = "Excel workbook (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv",
+                FileName = (tests.Count == 1 ? Sanitize(tests[0].Key) : "DynamiX") + "_summary.xlsx",
+                InitialDirectory = folder,
+            };
+            if (dialog.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+            try
+            {
+                SummaryExport.Write(dialog.FileName, tests, AppSettings.Current.Units);
+                say("Exported " + Path.GetFileName(dialog.FileName));
+            }
+            catch (Exception ex)
+            {
+                say("Export failed: " + ex.Message);
+            }
+        }
+
+        // ------------------------------------------------------------------ helpers
+
+        private static string Sanitize(string name)
+        {
+            return string.Concat(name.Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_'));
+        }
+
+        /// <summary> The ESP32 sends 0 for "no valid reading". </summary>
+        private static double ToTemp(double celsius)
+        {
+            return celsius == 0 ? double.NaN : celsius;
+        }
+
+        private static string DebugText(List<Sample> points)
+        {
+            var sb = new StringBuilder();
+            int first = Math.Max(0, points.Count - DebugPoints);
+            for (int i = first; i < points.Count; i++)
+            {
+                sb.Append("Point ").Append(i - first)
+                  .Append(": t=").Append(points[i].T.ToString("0.000000"))
+                  .Append(" , f=").Append(points[i].F.ToString("0.##"))
+                  .Append(" , p=").Append(points[i].X.ToString("0.##"))
+                  .Append('\n');
+            }
+            return sb.ToString();
         }
     }
 }

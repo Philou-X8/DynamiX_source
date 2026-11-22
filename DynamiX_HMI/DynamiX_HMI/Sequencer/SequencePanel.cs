@@ -96,6 +96,22 @@ namespace DynamiX_HMI.Sequencer
         }
 
 
+        /// <summary> The steps as a plan (target speed in mm/s, drive Hz, cycles), in the order they are sent. </summary>
+        public bool GetPlan(out List<(double targetMmS, double hz, int cycles)> plan)
+        {
+            plan = new List<(double, double, int)>();
+            foreach (SequenceItem item in flowLayoutPanel1.Controls)
+            {
+                if (!item.ReadPlan(out double targetMmS, out double hz, out int cycles))
+                {
+                    plan.Clear();
+                    return false;
+                }
+                plan.Add((targetMmS, hz, cycles));
+            }
+            return true;
+        }
+
         public void MoveUp(SequenceItem item)
         {
             if (flowLayoutPanel1.Controls.Contains(item))

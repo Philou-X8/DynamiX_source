@@ -1,4 +1,6 @@
 ﻿using DynamiX_HMI.Grapher;
+using DynamiX_HMI.Analysis;
+using DynamiX_HMI.Config;
 using DynamiX_HMI.Menus;
 using DynamiX_HMI.Sequencer;
 using DynamiX_HMI.Serial;
@@ -39,10 +41,13 @@ namespace DynamiX_HMI
         private const int EspTimeoutMs = 1000;
         private System.Windows.Forms.Timer heartbeatTimer;
 
-        private DataCalibration calibrationMetadata;
+        // What the ESP32 measured, kept for the next run: the TAR (empty load, stroke) and the calibration cycle
+        private RunCalibration runCalibration = new RunCalibration();
+        private double tarStrokeMm; // 0 = no TAR yet
         // Calibration stroke may differ from the TAR stroke by this fraction before we warn
         private const float StrokeMismatchTolerance = 0.05f;
         private float temperatureData;
+        private string lastRunsFolder = "";
 
         public MasterForm()
         {
@@ -61,13 +66,22 @@ namespace DynamiX_HMI
 
             optionPanel1.SetSerialHandle(serialController.SendGuiCommand); // failsafe and reboot go straight to the ESP
 
-            graphController = new GraphController(runPanel1, graphPanel1);
+            logger = new Logger(buttonConnection, labelDebugMessage, labelStatus);
+
+            graphController = new GraphController(runPanel1, graphPanel1, logger.SetMessage);
 
             machineController = new MachineController(serialController);
 
-            logger = new Logger(buttonConnection, labelDebugMessage, labelStatus);
+            // The options page takes the place of the graphs: the Options button swaps them
+            rightGridLayout.Controls.Remove(optionPanel1);
+            centerGridLayout.Controls.Add(optionPanel1, 0, 1);
+            optionPanel1.Visible = false;
+            rightGridLayout.RowStyles[1].Height = 0;
+            optionPanel1.SettingsChanged += OnSettingsChanged;
+            mainSplitContainerRight.SplitterDistance = Math.Max(200, mainSplitContainerRight.Width - 340); // room for the run list
 
-            calibrationMetadata = new DataCalibration();
+            lastRunsFolder = AppSettings.Current.RunsFolder;
+            graphController.LoadHistory();
 
 
             heartbeatTimer = new System.Windows.Forms.Timer();
@@ -90,8 +104,8 @@ namespace DynamiX_HMI
         /// <summary> Must only be invoked by HandleSerialData() </summary>
         private void SafeHandleSerialData(List<DataPointRaw> points)
         {
-            // mm, N and s from here on (raw counts if conversion is off in the options)
-            graphController.AddPoints(optionPanel1.ConvertPoints(points));
+            // converted to mm, N and s inside (raw counts if conversion is off in the options)
+            graphController.AddRawPoints(points);
         }
 
 
@@ -141,16 +155,10 @@ namespace DynamiX_HMI
                     break;
 
                 case CommandFlags.ESP_sequence_separator:
-
-                    calibrationMetadata.temperatureEnd = temperatureData;
-                    // TODO: add the cachedCalibration to the parameters
-                    if (!graphController.TryAddSequenceSeparator(command))
+                    if (!graphController.TryAddSequenceSeparator(command, temperatureData))
                     {
                         logger.SetMessage("ERROR: bad sequence separator (" + command.payload.Length + " bytes)");
                     }
-
-                    // this end temperature is the start temperature of the next sequence
-                    calibrationMetadata.temperatureStart = temperatureData;
                     break;
 
                 default:
@@ -229,15 +237,26 @@ namespace DynamiX_HMI
 
         private void buttonOptions_Click(object sender, EventArgs e)
         {
-            if (optionPanel1.Visible)
+            // the options page and the graphs share the same place
+            bool showOptions = !optionPanel1.Visible;
+            optionPanel1.Visible = showOptions;
+            graphPanel1.Visible = !showOptions;
+            if (showOptions)
             {
-                optionPanel1.Hide();
-                rightGridLayout.RowStyles[1].Height = 0;
+                optionPanel1.BringToFront();
             }
-            else
+            buttonOptions.Text = showOptions ? "Graphs" : "Options";
+        }
+
+        /// <summary> A setting changed on the options page (already saved): analysis, graphs and units follow. </summary>
+        private void OnSettingsChanged()
+        {
+            graphController.SettingsChanged();
+            string runs = AppSettings.Current.RunsFolder;
+            if (runs != lastRunsFolder) // another data folder: another list of runs
             {
-                optionPanel1.Show();
-                rightGridLayout.RowStyles[1].Height = optionPanel1.staringSize;
+                lastRunsFolder = runs;
+                graphController.LoadHistory();
             }
         }
 
@@ -429,8 +448,12 @@ namespace DynamiX_HMI
             // Transition: AwaitingStart state
             logger.SetState("State Starting");
 
-            // Fresh point buffer for this run
-            graphController.BeginRun();
+            // A new run in the run list: the plan is what is sent to the ESP, the calibration what it just measured
+            if (!sequencePanel1.GetPlan(out List<(double targetMmS, double hz, int cycles)> plan))
+            {
+                plan = new List<(double, double, int)>();
+            }
+            graphController.BeginRun(plan, runCalibration.Clone(), temperatureData);
 
             // Send every step of the sequence (CommandFlags.GUI_send_sequence), then the start command.
             if (!sequencePanel1.MakeSequence(out List<CommandPacket> sequence))
@@ -445,8 +468,6 @@ namespace DynamiX_HMI
             {
                 serialController.SendGuiCommand(packet);
             }
-
-            calibrationMetadata.temperatureStart = temperatureData;
 
             serialController.SendGuiCommand(new CommandPacket(CommandFlags.GUI_run_start, ""));
 
@@ -544,8 +565,11 @@ namespace DynamiX_HMI
             int temperature = DecodePayloadInt(command.payload, 12);
 
             // mm and N (raw counts if conversion is off in the options)
-            labelPosVal.Text = optionPanel1.ConvertPosition(position).ToString("0.##");
-            labelForceVal.Text = optionPanel1.ConvertForce(force).ToString("0.##");
+            AppSettings set = AppSettings.Current;
+            labelPosVal.Text = set.PositionMm(position).ToString("0.##");
+            labelForceVal.Text = set.ForceN(force).ToString("0.##");
+            optionPanel1.SetLiveRaw(position, force);
+            graphController.AddLiveData(position, force);
             if (posMin == 0 && posMax == 0)
             {
                 // no TAR or calibration yet: converting 0 counts would show a made-up position
@@ -556,8 +580,8 @@ namespace DynamiX_HMI
             }
             else
             {
-                float min = optionPanel1.ConvertPosition(posMin);
-                float max = optionPanel1.ConvertPosition(posMax);
+                float min = (float)set.PositionMm(posMin);
+                float max = (float)set.PositionMm(posMax);
                 labelPosMinVal.Text = min.ToString("0.##");
                 labelPosMaxVal.Text = max.ToString("0.##");
                 labelStrokeVal.Text = Math.Abs(max - min).ToString("0.##");
@@ -582,16 +606,11 @@ namespace DynamiX_HMI
             int rawEmptyF = DecodePayloadInt(command.payload, 6);
 
             // Unit conversion (mm and N), or unchanged raw counts if it's off in the options
-            float emptyF = optionPanel1.ConvertForce(rawEmptyF);
-            float botP = optionPanel1.ConvertPosition(rawBotP);
-            float topP = optionPanel1.ConvertPosition(rawTopP);
+            AppSettings set = AppSettings.Current;
+            runCalibration.EmptyForceN = set.ForceN(rawEmptyF);
+            tarStrokeMm = Math.Abs(set.PositionMm(rawTopP) - set.PositionMm(rawBotP)); // abs: a negative scale swaps the ends
 
-            calibrationMetadata.emptyForce = emptyF;
-            calibrationMetadata.bottomPosition = botP;
-            calibrationMetadata.topPosition = topP;
-            calibrationMetadata.stroke = Math.Abs(topP - botP); // abs: a negative scale swaps the ends
-
-            sequencePanel1.UpdateStroke(calibrationMetadata.stroke, true);
+            sequencePanel1.UpdateStroke((float)tarStrokeMm, true);
         }
 
         private void SetCalibrationData(CommandPacket command)
@@ -604,19 +623,24 @@ namespace DynamiX_HMI
                 return;
             }
 
-            float botP = optionPanel1.ConvertPosition(DecodePayloadInt(command.payload, 0));
-            float topP = optionPanel1.ConvertPosition(DecodePayloadInt(command.payload, 3));
-            calibrationMetadata.bottomForce = optionPanel1.ConvertForce(DecodePayloadInt(command.payload, 6));
-            calibrationMetadata.topForce = optionPanel1.ConvertForce(DecodePayloadInt(command.payload, 9));
+            AppSettings set = AppSettings.Current;
+            int rawMin = DecodePayloadInt(command.payload, 0);
+            int rawMax = DecodePayloadInt(command.payload, 3);
+            int rawBottom = set.BottomAtHighPosition ? rawMax : rawMin; // which end of the sensor range is the bottom
+            int rawTop = set.BottomAtHighPosition ? rawMin : rawMax;
+            runCalibration.BottomMm = set.PositionMm(rawBottom);
+            runCalibration.TopMm = set.PositionMm(rawTop);
+            runCalibration.BottomForceN = set.ForceN(DecodePayloadInt(command.payload, 6));
+            runCalibration.TopForceN = set.ForceN(DecodePayloadInt(command.payload, 9));
 
             // display calibration data
-            labelForceMinVal.Text = calibrationMetadata.bottomForce.ToString("0.##");
-            labelForceMaxVal.Text = calibrationMetadata.topForce.ToString("0.##");
+            labelForceMinVal.Text = runCalibration.BottomForceN.ToString("0.##");
+            labelForceMaxVal.Text = runCalibration.TopForceN.ToString("0.##");
 
             // send a warning if the stroke is really far from the one saved in the metadata
             // (the TAR stroke; skipped if there was no TAR, the stroke is still 0)
-            float stroke = Math.Abs(topP - botP);
-            float tarStroke = calibrationMetadata.stroke;
+            double stroke = runCalibration.StrokeMm;
+            double tarStroke = tarStrokeMm;
             if (tarStroke > 0 && Math.Abs(stroke - tarStroke) > StrokeMismatchTolerance * tarStroke)
             {
                 logger.SetMessage("Warning: Calibration stroke missmatch from tar");

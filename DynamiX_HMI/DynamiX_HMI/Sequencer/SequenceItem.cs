@@ -88,6 +88,22 @@ namespace DynamiX_HMI.Sequencer
             
         }
 
+        /// <summary> This item as a plan step: the target peak speed (mm/s), the drive frequency (Hz) and the number of cycles. </summary>
+        public bool ReadPlan(out double targetMmS, out double hz, out int cycles)
+        {
+            targetMmS = 0;
+            hz = 0;
+            cycles = 0;
+            if (!ValidateItem(out float speed, out float duration))
+            {
+                return false;
+            }
+            hz = speed;
+            cycles = (int)Math.Round(duration, MidpointRounding.AwayFromZero);
+            targetMmS = ParseNumber(textBoxSpeed.Text) * 1000.0; // the box holds m/s
+            return true;
+        }
+
         public bool ValidateItem(out float speed, out float duration)
         {
             speed = 0f;
