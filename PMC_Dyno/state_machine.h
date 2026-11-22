@@ -1,184 +1,239 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-#include "motor_control.h"
-#include "data_buffer.h"
-#include "protocol.h"
-#include "command_flags.h"
 #include "cycle_counter.h"
+#include "printf_format.h"
+#include "protocol.h"
+#include "sensor_sample.h"
 #include "sequence_step.h"
+#include "signal_filters.h"
+#include "stroke_tools.h"
 
+class GuiLink;
+class MotorDrive;
+class PointBuffer;
+
+// The machine's states. Mirrors the GUI's MachineController:
+//
+//   Idle --GUI_run_request--> Armed --GUI_calibrate--> Calibration --done--> Armed
+//        --GUI_send_sequence x N, GUI_run_start--> Operating --last step, bottom out--> Idle
+//   Idle --GUI_TAR_request / GUI_bottom_out--> Tar --done--> Idle
+//   any motion state --fault--> Panic --GUI_abort--> Idle
+//   any state --safety circuit open (pin DRIVE_READY not at DRIVE_READY_LEVEL)--> Panic
+//        --reset button on the machine (relay closed again)--> Idle
+//   any state --GUI_abort / GUI_check_connection--> Idle (motor stopped),
+//        except Panic while the safety circuit is open
 enum class State : uint8_t {
-    Idle,
-    Panic,
-    Armed, // after getting a run request and making sure the drive is ready, wait here for the speed configurations
-    Calibration,
-    Operating,
-    Tar
+    Idle,        // motor stopped, nothing measured
+    Panic,       // a fault stopped the motor. Left by the machine's reset button for a
+                 // safety circuit fault, by GUI_abort for the others (circuit closed)
+    Armed,       // run accepted, waiting for the calibration, the sequence and the start
+    Calibration, // run calibration: bottom force, stroke, top force
+    Operating,   // running the sequence and streaming points, then the bottom out
+    Tar,         // empty load (TAR only), stroke, then bottom out the scotch yoke
 };
 
-// Reasons the state machine can enter Panic, matching design doc section 7.
 enum class FaultReason : uint8_t {
-    None,
-    SensorStalled,      // sequence counter not incrementing
-    SensorOutOfRange,    // saturated / implausible reading
-    DriveFault,          // motor drive reported an error
-    LoopTimingDrift,      // main loop iteration overran its ~2ms budget
-    CycleTimeout,          // running at speed but no cycle completed for a long time
-    ForceFailsafe       // Loadcell detected force over limits
+    SensorStalled,    // no new sensor sample while the motor is driven
+    SensorOutOfRange, // a sensor input is saturated (overload, or a wire is off)
+    DriveFault,       // the drive answered an error, or didn't reach / leave a speed
+    CycleTimeout,     // the motor turns but the position doesn't cycle
+    ForceFailsafe,    // the load cell reads over the limit
+    StrokeNotFound,   // calibration / TAR couldn't find the stroke
+    SafetyCircuit,    // the drive's ready relay opened: e-stop, door, or a drive fault
 };
 
-// A decoded command frame: the flag byte (see command_flags.h) plus its
-// payload (everything after the flag, up to 254 bytes).
-struct Instruction {
-    uint8_t flag;
-    uint8_t payload[MAX_PAYLOAD_SIZE - 1];
-    size_t payloadSize;
-};
-
-// comms_task.h includes this header (for Instruction), so only forward
-// declare here; state_machine.cpp includes the full definitions.
-class CommsTask;
-class DriveComms;
-struct DriveFrame;
-
-// Most steps a run can have. The GUI can build more (up to 255); the run
-// request is refused above this.
+// Most steps a run can have; a longer run request is refused.
 constexpr size_t MAX_SEQUENCE_STEPS = 32;
 
+// Owns every decision: what each GUI command does in each state, what the
+// motor does, and when the GUI is told what. Runs on the main loop only.
+//
+// Time is passed in by the caller and nothing here touches the hardware
+// directly, so the host tests drive it with simulated sensors and drive.
 class StateMachine {
 public:
-    // 'comms' is used to send replies/acks back to the GUI (via its priority
-    // queue). May be null, in which case replies are silently skipped.
-    // 'drive' is the Modbus link to the motor drive. May be null, in which
-    // case drive commands are skipped (and a run can't start).
-    void begin(MotorControl* motor, DoubleBuffer* dataBuffer, CommsTask* comms, DriveComms* drive);
+    void begin(GuiLink* gui, MotorDrive* drive, PointBuffer* points);
 
-    // Called once per main loop iteration (~500 Hz target).
-    // 'timeMs' is the loop time in microseconds (micros()), despite the name.
-    void update(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
+    // Called by the main loop every tick (2 ms), in this order:
+    void pollDrive();                                           // drive answers (errors, running frequency)
+    void handleCommand(const Command& command, uint32_t nowMs); // each command received from the GUI
+    void onSample(const SensorSample& sample, uint32_t nowMs);  // the new sensor pair, if there is one
+    void tick(uint32_t nowMs);                                  // timeouts, stall detection, live data
 
-    // Range of the position sensor seen so far. Call before update(): the
-    // cycle counter thresholds (30% / 70%) are taken from it.
-    void setPositionRange(int32_t min, int32_t max);
+    // Called every main loop iteration with the drive's ready relay (pin
+    // DRIVE_READY): true = pin at DRIVE_READY_LEVEL = safety circuit closed, drive ready.
+    void onSafetyInput(bool ready, uint32_t nowMs);
 
-    // Called by the main loop when a pending instruction has been decoded
-    // off the priority/instruction queue.
-    void handleInstruction(const Instruction& instr);
+    // Newest temperature (0.01 degC, 0 = unknown), for the live data. Called
+    // every main loop iteration.
+    void setTemperature(int32_t centiCelsius) { temperature_ = centiCelsius; }
 
-    // Called by the main loop for each frame the motor drive sent back.
-    void handleDriveResponse(const DriveFrame& frame);
+    // Turns on the drive's RS-485 timeout. Called at boot (after the stop)
+    // and when the GUI connects. Never resets a drive fault.
+    void prepareDrive();
 
-    // Called by the main loop when it detects a fault condition itself
-    // (e.g. a stalled sensor sequence counter, or its own loop timing
-    // drift) -- see design doc section 7 for the full trigger list.
-    void raiseFault(FaultReason reason);
+    State state() const { return state_; }
 
-    State current() const { return state_; }
+    // GUI_force_reboot was received and the motor stop is queued; the main
+    // loop restarts the ESP once the stop had time to go out.
+    bool rebootRequested() const { return rebootRequested_; }
 
 private:
-    // What a run is doing for the current step of the sequence.
     enum class RunPhase : uint8_t {
-        SpeedingUp, // frequency sent to the drive, waiting for it to get there
-        Counting    // at speed, counting cycles from the position sensor
+        SpeedingUp, // step frequency sent, waiting for the drive to get there
+        Counting,   // at speed, counting cycles
+        BottomOut,  // every step done, no more points: parking the yoke at the bottom
     };
-
     enum class CalibrationPhase : uint8_t {
-        BottomLoad, // dyno not moving yet, calibrate bottom
-        FindStroke, // do a few cycles to find the min/max pos
-        TopLoad,    // try to stop at the top to measure the force
-        CalibComplete, // finished, wrap things up
-        Idle // safety net
+        BottomForce, // motor stopped (yoke near the bottom): average the force
+        FindStroke,  // a little over one cycle at CALIBRATION_CENTIHZ: where the yoke turns back
+        ApproachTop, // on the way up: slow down to CALIBRATION_TOP_CENTIHZ before the top
+        TopForce,    // average the force through the top
     };
+    enum class TarPhase : uint8_t {
+        EmptyLoad,  // motor stopped: average the force with nothing on the bench (TAR only)
+        FindStroke, // motor turning slowly: record the position min/max
+        BottomOut,  // park the yoke at the bottom
+    };
+    // The bottom out, shared by the TAR, GUI_bottom_out and the end of a run.
+    enum class BottomOutPhase : uint8_t {
+        ReachSpeed, // TAR_CENTIHZ sent, waiting for the drive to get there
+        Seek,       // wait for the yoke to pass the stop point on its way down
+        Stopping,   // stop sent, wait for the drive to reach 0 Hz
+        Settle,     // stopped, let the yoke settle before reading where it is
+    };
+    enum class SpeedCheck : uint8_t { Waiting, Reached, TimedOut };
+    enum class Progress : uint8_t { Busy, Done, Failed }; // Failed: already in Panic
 
-    void onIdle();
-    void onTar(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
-    void onCalibration(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
-    void onOperating(int32_t positionRaw, int32_t forceRaw, uint32_t timeMs);
-    void onPanic();
+    // --- GUI commands
+    void onRunRequest(const Command& command, uint32_t nowMs);
+    void onCalibrate(uint32_t nowMs);
+    void onSetFailsafe(const Command& command);
+    void onSequenceStep(const Command& command);
+    void onRunStart(uint32_t nowMs);
+    void onTarRequest(bool measureEmptyLoad, uint32_t nowMs);
+    void onDebugDriveFrame(const Command& command);
+    void onReboot();
 
-    void enterPanic(FaultReason reason);
-    void enterIdle();
+    // --- Per sample, per state
+    bool safetyChecksPass();
+    void updateCalibration(uint32_t nowMs);
+    void updateOperating(const SensorSample& sample, uint32_t nowMs);
+    void updateTar(uint32_t nowMs);
 
-    // Queue a payload-less command (flag only) for the GUI. Returns false
-    // if comms isn't wired up or the priority queue is full.
-    bool sendCommand(uint8_t flag);
+    // --- Run
+    void startRun(uint32_t nowMs);
+    bool beginStep(uint32_t nowMs);
+    void finishStep(uint32_t endUs, uint32_t nowMs);
+    void finishRun();
 
-    // Queue an ESP_message with a text message for the GUI log.
-    void sendMessage(const char* text);
+    // --- Calibration
+    void finishCalibration(uint32_t nowMs);
 
-    // Queue an ESP_error with a text message for the GUI log.
-    void sendError(const char* text);
+    // --- TAR
+    bool startTarMotion(uint32_t nowMs);
+    void finishTar();
 
-    // Queue one Modbus frame for the drive. Returns false if it was refused.
-    bool sendDriveFrame(const uint8_t* frame, size_t length);
+    // --- Bottom out (any motion state)
+    bool startBottomOut(uint32_t nowMs);
+    Progress updateBottomOut(uint32_t nowMs);
+    double bottomPercent() const;
 
-    // Tell the motor drive to stop and set its speed to 0 (hardcoded Modbus
-    // frames). Reports an error to the GUI if a frame couldn't be queued.
-    void stopDrive();
+    // --- Transitions
+    void stopMotor();
+    void goIdle();
+    void abort();
+    void leavePanic();
+    bool refuseIfSafetyOpen(const char* what);
+    void enterMotionState(State state, uint32_t nowMs);
+    void denyRun(const char* fmt, ...) PRINTF_FORMAT(2, 3);
+    void enterPanic(FaultReason reason, const char* fmt = nullptr, ...) PRINTF_FORMAT(3, 4);
 
-    // --- Run sequence ---
-    void startRun();                 // GUI_run_start: first step, clock reset
-    bool beginStep();                // send the drive frequency of steps_[stepIndex_]
-    void updateSpeedingUp(uint32_t runTimeUs);
-    void updateCounting(int32_t positionRaw, uint32_t runTimeUs);
-    void finishStep(uint32_t endUs); // separator, then next step or end of run
+    // --- Helpers
+    SpeedCheck checkSpeed(uint16_t targetCentiHz, uint32_t nowMs);
+    void startPhaseClock(uint32_t nowMs);
+    void startStrokeSearch(uint32_t nowMs);
+    void setStroke(int32_t strokeMin, int32_t strokeMax);
+    bool startMotor(uint16_t centiHz);
+    void sendCalibrationData();
+    void sendTarData(int32_t force);
+    void sendLiveData(uint32_t nowMs);
+    void report(uint8_t flag, const char* fmt, ...) PRINTF_FORMAT(3, 4);
+    bool inMotionState() const;
+    bool sensorAlive(uint32_t nowMs) const;
+
+    GuiLink* gui_ = nullptr;
+    MotorDrive* drive_ = nullptr;
+    PointBuffer* points_ = nullptr;
 
     State state_ = State::Idle;
-    FaultReason lastFault_ = FaultReason::None;
+    bool rebootRequested_ = false;
 
-    MotorControl* motor_ = nullptr;
-    DoubleBuffer* dataBuffer_ = nullptr;
-    CommsTask* comms_ = nullptr;
-    DriveComms* drive_ = nullptr;
+    // --- Safety circuit
+    enum class Safety : uint8_t { Unknown, Open, Closed };
+    Safety safety_ = Safety::Unknown;  // debounced
+    bool safetyRaw_ = false;
+    uint32_t safetyRawSinceMs_ = 0;
+    FaultReason panicReason_ = FaultReason::SafetyCircuit;
+    bool panicNeedsGui_ = false;       // a software fault: GUI_abort acknowledges it
+    uint32_t lastLiveDataMs_ = 0;
+    int32_t temperature_ = 0;          // 0.01 degC, 0 = unknown
 
-    // The run's steps, filled by GUI_send_sequence while Armed. A step is
-    // stored at its 'order' so the sequence runs in the order the GUI meant,
-    // and stepReceived_ lets GUI_run_start check that none were lost.
+    // --- Sensors (every new sample)
+    bool haveSample_ = false;
+    uint32_t lastSampleMs_ = 0;
+    Median5 positionFilter_;
+    Median5 forceFilter_;
+    int32_t position_ = 0;       // spike-filtered (median of 5)
+    int32_t force_ = 0;          // spike-filtered (median of 5)
+    SlowAverage forceAverage_;   // for "current force" reports
+    InARow railInARow_;
+    InARow overloadInARow_;
+
+    // --- What the machine knows (kept between runs)
+    bool strokeKnown_ = false;
+    int32_t strokeMin_ = 0;
+    int32_t strokeMax_ = 0;
+    bool emptyLoadKnown_ = false;
+    int32_t emptyLoad_ = 0;      // TAR: force with nothing on the bench
+    int32_t bottomForce_ = 0;    // calibration: at rest near the bottom, shock mounted
+    int32_t topForce_ = 0;       // calibration: through the top at slow speed
+    int32_t forceMin_ = 0;       // failsafe window, raw counts (GUI_set_failsafe)
+    int32_t forceMax_ = 0;
+
+    // --- Phase bookkeeping (Calibration, Operating, Tar)
+    uint32_t phaseStartMs_ = 0;
+    uint32_t lastQueryMs_ = 0;   // last running-frequency query
+    RestForce restForce_;        // TAR empty load, calibration bottom force
+    StrokeFinder strokeFinder_;  // TAR: stroke from a settled range
+    BottomOutPhase bottomOutPhase_ = BottomOutPhase::ReachSpeed;
+    EndApproach approach_;       // bottom out stop point, calibration slow-down point
+
+    // --- Armed: the run being prepared
+    uint32_t armedSinceMs_ = 0;
     SequenceStep steps_[MAX_SEQUENCE_STEPS];
-    bool stepReceived_[MAX_SEQUENCE_STEPS];
-    uint8_t stepsExpected_ = 0;  // from GUI_run_request
+    bool stepReceived_[MAX_SEQUENCE_STEPS] = {};
+    uint8_t stepsExpected_ = 0;
     uint8_t stepsReceived_ = 0;
 
-    uint8_t stepIndex_ = 0;      // step being run
+    // --- Operating
     RunPhase runPhase_ = RunPhase::SpeedingUp;
+    uint8_t stepIndex_ = 0;
     bool runClockStarted_ = false;
-    uint32_t runStartUs_ = 0;    // micros() at the first sample of the run; point times count from here
-    uint32_t stepStartUs_ = 0;   // run time when the drive reached the step's speed
-    uint32_t phaseStartMs_ = 0;  // millis() when the current phase began
-    uint32_t lastQueryMs_ = 0;   // millis() of the last "read running frequency" request
-    uint32_t lastCycleMs_ = 0;   // millis() of the last completed cycle (or start of counting)
+    uint32_t runStartUs_ = 0;    // sample time of the run's first point; point times count from here
+    uint32_t stepStartUs_ = 0;   // run time when the step reached its speed
+    uint32_t lastCycleMs_ = 0;
     uint8_t cyclesDone_ = 0;
     CycleCounter cycleCounter_;
 
-    // Latest running frequency the drive reported (0.01 Hz). Fresh = received
-    // since the current step began.
-    uint16_t driveFreqCentiHz_ = 0;
-    bool driveFreqFresh_ = false;
+    // --- Calibration
+    CalibrationPhase calibrationPhase_ = CalibrationPhase::BottomForce;
+    uint32_t calibrationMotionStartMs_ = 0;
+    TurnStrokeFinder turnFinder_;
+    EndForceAverage topForceAverage_;
 
-    CalibrationPhase calibPhase_ = CalibrationPhase::BottomLoad;
-
-    static constexpr size_t SENSOR_AVG_SIZE = 128;
-    int32_t sensor_pos_avg[SENSOR_AVG_SIZE] = {0};
-    size_t sensor_pos_avg_i = 0;
-    int32_t sensor_force_avg[SENSOR_AVG_SIZE] = {0};
-    size_t sensor_force_avg_i = 0;  
-    size_t sensor_avg_count = 0; // readings stored so far
-    int32_t posMin_ = 0;
-    int32_t posMax_ = 0;
-    int32_t forceBot_ = 0;
-    int32_t forceTop_ = 0;
-
-    bool tarReady = false;
-
-    int32_t forceFailsafe_ = 0;
-
-    // The last two frames sent to the drive (newest first), for error reports.
-    struct SentFrame {
-        uint8_t function = 0;
-        uint16_t reg = 0;
-        uint16_t value = 0;
-        bool valid = false;
-    };
-    SentFrame recentFrames_[2];
+    // --- Tar
+    TarPhase tarPhase_ = TarPhase::EmptyLoad;
+    bool tarMeasuresEmptyLoad_ = false;
 };

@@ -1,207 +1,109 @@
 #include "protocol.h"
 #include <string.h>
+#include "bytes.h"
 
-// --- Point serialization -----------------------------------------------
-// Wire layout per point (10 bytes), big-endian (most significant byte
-// first):
-//   [0..2]  position, 24 bits, signed (two's complement)
-//   [3..5]  force,    24 bits, signed (two's complement)
-//   [6..9]  time_ms,  32 bits, unsigned
-//
-// Must stay in sync with SerialDecoder.DecodeMessage() on the PC side.
+namespace {
 
-void writeInt24BE(int32_t v, uint8_t* out) {
-    // Two's complement: the low 24 bits of the int32 are already the 24-bit
-    // two's complement value.
-    const uint32_t u = (uint32_t)v;
-    out[0] = (uint8_t)((u >> 16) & 0xFF);
-    out[1] = (uint8_t)((u >> 8) & 0xFF);
-    out[2] = (uint8_t)(u & 0xFF);
+void writeHeader(uint8_t type, size_t bodySize, uint8_t* out) {
+    out[0] = SYNC_0;
+    out[1] = SYNC_1;
+    out[2] = type;
+    out[3] = (uint8_t)bodySize;
 }
 
-int32_t readInt24BE(const uint8_t* b) {
-    const uint32_t u = ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[2];
-    // Sign-extend from bit 23.
-    return (int32_t)((u ^ 0x800000u) - 0x800000u);
-}
-
-static void writePointBytes(const Point& p, uint8_t* out) {
-    // writeInt24BE keeps only the low 24 bits, so an out-of-range value
-    // can't leak into the neighbouring field.
+// [0..2] position, [3..5] force (24-bit signed), [6..9] time (32-bit unsigned)
+void writePoint(const Point& p, uint8_t* out) {
     writeInt24BE(p.position, out);
     writeInt24BE(p.force, out + 3);
-
-    out[6] = (uint8_t)((p.time_ms >> 24) & 0xFF);
-    out[7] = (uint8_t)((p.time_ms >> 16) & 0xFF);
-    out[8] = (uint8_t)((p.time_ms >> 8) & 0xFF);
-    out[9] = (uint8_t)(p.time_ms & 0xFF);
+    writeUint32BE(p.timeUs, out + 6);
 }
 
-static void readPointBytes(const uint8_t* in, Point& p) {
-    p.position = readInt24BE(in);
-    p.force = readInt24BE(in + 3);
-    p.time_ms = ((uint32_t)in[6] << 24) | ((uint32_t)in[7] << 16) |
-                ((uint32_t)in[8] << 8) | (uint32_t)in[9];
-}
+} // namespace
 
-// --- Encoding ------------------------------------------------------------
-
-size_t encodeDataFrame(const Point* points, size_t count,
-                        uint8_t* outBuf, size_t outBufSize) {
-    if (count == 0 || count > MAX_POINTS_PER_BUFFER) {
+size_t encodeDataFrame(const Point* points, size_t count, uint8_t* out, size_t outSize) {
+    const size_t bodySize = count * POINT_WIRE_SIZE;
+    if (count == 0 || count > MAX_POINTS_PER_FRAME || HEADER_SIZE + bodySize > outSize) {
         return 0;
     }
-    const size_t payloadSize = count * POINT_WIRE_SIZE;
-    const size_t totalSize = HEADER_SIZE + payloadSize;
-    if (totalSize > outBufSize || payloadSize > MAX_PAYLOAD_SIZE) {
-        return 0;
-    }
-
-    outBuf[0] = SYNC_0;
-    outBuf[1] = SYNC_1;
-    outBuf[2] = TYPE_DATA;
-    outBuf[3] = (uint8_t)payloadSize;
-
-    uint8_t* payloadPtr = outBuf + HEADER_SIZE;
+    writeHeader(TYPE_DATA, bodySize, out);
     for (size_t i = 0; i < count; i++) {
-        writePointBytes(points[i], payloadPtr + i * POINT_WIRE_SIZE);
+        writePoint(points[i], out + HEADER_SIZE + i * POINT_WIRE_SIZE);
     }
-    return totalSize;
-}
-
-size_t encodeInstructionFrame(const uint8_t* payload, size_t payloadSize,
-                               uint8_t* outBuf, size_t outBufSize) {
-    if (payloadSize > MAX_PAYLOAD_SIZE) {
-        return 0;
-    }
-    const size_t totalSize = HEADER_SIZE + payloadSize;
-    if (totalSize > outBufSize) {
-        return 0;
-    }
-
-    outBuf[0] = SYNC_0;
-    outBuf[1] = SYNC_1;
-    outBuf[2] = TYPE_INSTRUCTION;
-    outBuf[3] = (uint8_t)payloadSize;
-
-    if (payloadSize > 0) {
-        memcpy(outBuf + HEADER_SIZE, payload, payloadSize);
-    }
-    return totalSize;
+    return HEADER_SIZE + bodySize;
 }
 
 size_t encodeCommandFrame(uint8_t flag, const uint8_t* payload, size_t payloadSize,
-                           uint8_t* outBuf, size_t outBufSize) {
-    // Body = [flag][payload...], so size counts the flag byte too.
+                          uint8_t* out, size_t outSize) {
     const size_t bodySize = 1 + payloadSize;
-    if (bodySize > MAX_PAYLOAD_SIZE) {
+    if (payloadSize > MAX_COMMAND_PAYLOAD || HEADER_SIZE + bodySize > outSize) {
         return 0;
     }
-    const size_t totalSize = HEADER_SIZE + bodySize;
-    if (totalSize > outBufSize) {
-        return 0;
-    }
-
-    outBuf[0] = SYNC_0;
-    outBuf[1] = SYNC_1;
-    outBuf[2] = TYPE_INSTRUCTION;
-    outBuf[3] = (uint8_t)bodySize;
-    outBuf[4] = flag;
-
+    writeHeader(TYPE_COMMAND, bodySize, out);
+    out[HEADER_SIZE] = flag;
     if (payloadSize > 0) {
-        memcpy(outBuf + HEADER_SIZE + 1, payload, payloadSize);
+        memcpy(out + HEADER_SIZE + 1, payload, payloadSize);
     }
-    return totalSize;
-}
-
-// --- DecodedFrame::decodePoints ------------------------------------------
-
-size_t DecodedFrame::decodePoints(Point* outPoints, size_t maxPoints) const {
-    if (type != FrameType::Data || payloadSize % POINT_WIRE_SIZE != 0) {
-        return 0;
-    }
-    size_t count = payloadSize / POINT_WIRE_SIZE;
-    if (count > maxPoints) {
-        count = maxPoints;
-    }
-    for (size_t i = 0; i < count; i++) {
-        readPointBytes(payload + i * POINT_WIRE_SIZE, outPoints[i]);
-    }
-    return count;
-}
-
-// --- FrameDecoder ---------------------------------------------------------
-
-FrameDecoder::FrameDecoder() {
-    reset();
+    return HEADER_SIZE + bodySize;
 }
 
 void FrameDecoder::reset() {
-    state_ = State::WaitSync0;
-    typeByte_ = 0;
-    expectedSize_ = 0;
-    bytesRead_ = 0;
+    step_ = Step::Sync0;
+    type_ = 0;
+    size_ = 0;
+    received_ = 0;
 }
 
-bool FrameDecoder::feed(uint8_t byte, DecodedFrame& out) {
-    switch (state_) {
-        case State::WaitSync0:
+bool FrameDecoder::feed(uint8_t byte, Command& out) {
+    switch (step_) {
+        case Step::Sync0:
             if (byte == SYNC_0) {
-                state_ = State::WaitSync1;
+                step_ = Step::Sync1;
             }
-            // else: stay hunting for sync
             return false;
 
-        case State::WaitSync1:
+        case Step::Sync1:
             if (byte == SYNC_1) {
-                state_ = State::WaitType;
-            } else if (byte == SYNC_0) {
-                // stay in WaitSync1 (allows 0xFF 0xFF 0x00 ... to resync)
-            } else {
-                state_ = State::WaitSync0;
+                step_ = Step::Type;
+            } else if (byte != SYNC_0) { // 0xFF 0xFF 0x00 still resyncs
+                step_ = Step::Sync0;
             }
             return false;
 
-        case State::WaitType:
-            if (byte == TYPE_DATA || byte == TYPE_INSTRUCTION) {
-                typeByte_ = byte;
-                state_ = State::WaitSize;
+        case Step::Type:
+            if (byte == TYPE_DATA || byte == TYPE_COMMAND) {
+                type_ = byte;
+                step_ = Step::Size;
             } else {
-                // Not a valid type flag -- resync.
-                state_ = State::WaitSync0;
+                step_ = Step::Sync0;
             }
             return false;
 
-        case State::WaitSize:
-            expectedSize_ = byte;
-            bytesRead_ = 0;
-            if (expectedSize_ == 0) {
-                if (typeByte_ == TYPE_INSTRUCTION) {
-                    // A command always carries at least its flag byte, so
-                    // size 0 is malformed -- drop it and resync.
-                    reset();
-                    return false;
+        case Step::Size:
+            size_ = byte;
+            received_ = 0;
+            if (size_ == 0) {
+                // A command always holds its flag; an empty data frame has nothing in it.
+                reset();
+                return false;
+            }
+            step_ = Step::Body;
+            return false;
+
+        case Step::Body:
+            body_[received_++] = byte;
+            if (received_ < size_) {
+                return false;
+            }
+            {
+                const bool isCommand = (type_ == TYPE_COMMAND);
+                if (isCommand) {
+                    out.flag = body_[0];
+                    out.payloadSize = size_ - 1;
+                    memcpy(out.payload, body_ + 1, out.payloadSize);
                 }
-                // Zero-length data frame: complete frame immediately.
-                out.type = FrameType::Data;
-                out.payloadSize = 0;
                 reset();
-                return true;
+                return isCommand;
             }
-            state_ = State::ReadPayload;
-            return false;
-
-        case State::ReadPayload:
-            buffer_[bytesRead_++] = byte;
-            if (bytesRead_ >= expectedSize_) {
-                out.type = (typeByte_ == TYPE_DATA) ? FrameType::Data
-                                                      : FrameType::Instruction;
-                out.payloadSize = bytesRead_;
-                memcpy(out.payload, buffer_, bytesRead_);
-                reset();
-                return true;
-            }
-            return false;
     }
-    return false; // unreachable
+    return false;
 }
