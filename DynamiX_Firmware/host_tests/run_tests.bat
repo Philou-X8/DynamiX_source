@@ -9,7 +9,7 @@ if "%VCVARS%"=="" set VCVARS=F:\Programming\IDE\VisualStudio\2022\Community\VC\A
 call "%VCVARS%" >nul 2>&1 || exit /b 1
 
 set SRC=%~dp0..
-set OUT=%TEMP%\pmc_dyno_host_tests
+set OUT=%TEMP%\dynamix_host_tests
 if not exist "%OUT%" mkdir "%OUT%"
 
 cl /nologo /std:c++17 /W4 /EHsc /O1 /Fo"%OUT%\\" /Fe"%OUT%\tests.exe" ^

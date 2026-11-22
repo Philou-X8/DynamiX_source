@@ -1,4 +1,4 @@
-// PMC_Dyno.ino -- shock dyno firmware (ESP32)
+// DynamiX_Firmware.ino -- shock dyno firmware (ESP32)
 //
 // Who does what:
 //   sensor_reader  task (core 0): ADS1256 -> newest force/position pair
