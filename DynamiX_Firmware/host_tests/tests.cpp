@@ -390,6 +390,12 @@ struct Sim {
     uint32_t sequence = 0;
     bool sensorsOn = true;
     bool safetyReady = true; // the drive's ready relay (pin DRIVE_READY)
+    // The GUI: once it has sent a command it pings every GUI_PING_MS, like the real one.
+    // guiAlive = false is a closed, crashed or frozen GUI.
+    static constexpr uint32_t GUI_PING_MS = 200;
+    bool guiAlive = true;
+    bool guiSeen = false;
+    uint32_t lastGuiMs = 0;
     std::function<void(SensorSample&)> sampleHook;
     // plant revolutions at each sample's run-relative time, to check the sections
     std::vector<std::pair<uint32_t, double>> revolutionsAt;
@@ -409,6 +415,8 @@ struct Sim {
         c.payloadSize = payload.size();
         if (!payload.empty()) std::memcpy(c.payload, payload.data(), payload.size());
         sm.handleCommand(c, nowMs);
+        guiSeen = true;
+        lastGuiMs = nowMs;
     }
 
     void tickOnce() {
@@ -416,6 +424,9 @@ struct Sim {
         m.step(0.002);
         sm.pollDrive();
         sm.onSafetyInput(safetyReady, nowMs);
+        if (guiAlive && guiSeen && nowMs - lastGuiMs >= GUI_PING_MS) {
+            command(Cmd::GUI_heartbeat);
+        }
         if (sensorsOn) {
             SensorSample s{m.position(), m.force(), nowMs * 1000u, ++sequence};
             if (sampleHook) sampleHook(s);
@@ -1051,6 +1062,124 @@ TEST(reboot_turns_the_drive_timeout_off) {
     CHECK(sim.sm.rebootRequested());
     CHECK(sim.wrote(DRIVE_REG_COMM_TIMEOUT_RAM, 0));
     CHECK(!sim.m.running);
+}
+
+// --- GUI heartbeat ---------------------------------------------------------------
+
+TEST(gui_pings_keep_the_run_going) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 40}});
+    sim->run(5000); // many times GUI_TIMEOUT_MS, with only the pings from the GUI
+    CHECK(sim->sm.state() == State::Operating);
+    CHECK(sim->m.running);
+    CHECK(sim->count(Cmd::ESP_not_connected) == 0);
+    CHECK(!sim->anyText(Cmd::ESP_error, "GUI silent"));
+}
+
+TEST(silent_gui_stops_the_run) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 40}});
+    sim->run(2000);
+    CHECK(sim->m.running);
+    sim->guiAlive = false; // the GUI froze; its last ping is up to 200 ms old
+    sim->run(50);
+    CHECK(sim->sm.state() == State::Operating); // not yet: GUI_TIMEOUT_MS counts from the last ping
+    sim->run(Config::GUI_TIMEOUT_MS);
+    CHECK(sim->sm.state() == State::Idle);
+    CHECK(!sim->m.running);
+    CHECK(sim->anyText(Cmd::ESP_error, "GUI silent"));
+    CHECK(sim->count(Cmd::ESP_emergency) == 0); // not a panic: nothing needs the reset button
+    CHECK(sim->count(Cmd::ESP_not_connected) == 0); // nobody to tell yet
+    CHECK(!sim->wrote(DRIVE_REG_CONTROL, 0x0007)); // never a fault reset
+
+    // The GUI comes back: its next ping learns the ESP dropped it, and it connects again.
+    sim->guiAlive = true;
+    sim->run(Sim::GUI_PING_MS + 10);
+    CHECK(sim->count(Cmd::ESP_not_connected) == 1);
+    sim->command(Cmd::GUI_check_connection);
+    sim->run(2000);
+    CHECK(sim->count(Cmd::ESP_not_connected) == 1); // linked again, no more answers
+    CHECK(sim->sm.state() == State::Idle);
+}
+
+TEST(silent_gui_in_every_state) {
+    // Armed, Calibration and Tar are stopped too, not only the run.
+    {
+        Sim sim;
+        sim.command(Cmd::GUI_run_request, {1});
+        sim.run(100);
+        CHECK(sim.sm.state() == State::Armed);
+        sim.guiAlive = false;
+        sim.run(Config::GUI_TIMEOUT_MS + Sim::GUI_PING_MS + 20);
+        CHECK(sim.sm.state() == State::Idle);
+    }
+    {
+        Sim sim;
+        sim.command(Cmd::GUI_TAR_request);
+        sim.run(2000);
+        CHECK(sim.sm.state() == State::Tar);
+        CHECK(sim.m.running);
+        sim.guiAlive = false;
+        sim.run(Config::GUI_TIMEOUT_MS + Sim::GUI_PING_MS + 20);
+        CHECK(sim.sm.state() == State::Idle);
+        CHECK(!sim.m.running);
+        CHECK(sim.anyText(Cmd::ESP_error, "GUI silent"));
+    }
+    {
+        Sim sim;
+        sim.command(Cmd::GUI_run_request, {1});
+        sim.command(Cmd::GUI_calibrate);
+        sim.run(2000);
+        CHECK(sim.sm.state() == State::Calibration);
+        sim.guiAlive = false;
+        sim.run(Config::GUI_TIMEOUT_MS + Sim::GUI_PING_MS + 20);
+        CHECK(sim.sm.state() == State::Idle);
+        CHECK(!sim.m.running);
+    }
+}
+
+TEST(silent_gui_leaves_a_panic_alone) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 40}});
+    sim->run(2000);
+    sim->sensorsOn = false; // sensor stall
+    sim->run(200);
+    sim->sensorsOn = true;
+    CHECK(sim->sm.state() == State::Panic);
+    sim->guiAlive = false;
+    sim->run(2000);
+    CHECK(sim->sm.state() == State::Panic); // only the GUI or the reset button leaves it
+    CHECK(sim->count(Cmd::ESP_emergency_clear) == 0);
+    sim->guiAlive = true;
+    sim->run(Sim::GUI_PING_MS + 10);
+    CHECK(sim->count(Cmd::ESP_not_connected) == 1);
+    sim->command(Cmd::GUI_check_connection); // the reconnecting GUI acknowledges a software panic
+    CHECK(sim->sm.state() == State::Idle && sim->count(Cmd::ESP_emergency_clear) == 1);
+}
+
+TEST(silent_gui_stops_the_debug_motor) {
+    Sim sim;
+    sim.command(Cmd::GUI_check_connection);
+    sim.run(100);
+    sim.m.running = true; // a motor the debug button started in Idle
+    sim.guiAlive = false;
+    sim.run(Config::GUI_TIMEOUT_MS + Sim::GUI_PING_MS + 20);
+    CHECK(!sim.m.running);
+    CHECK(sim.sm.state() == State::Idle);
+    CHECK(!sim.anyText(Cmd::ESP_error, "GUI silent")); // nothing was interrupted: debug text only
+}
+
+TEST(heartbeat_from_an_unknown_gui_is_answered_once) {
+    Sim sim;
+    sim.run(3000); // nobody ever talked to the ESP: nothing to time out
+    CHECK(!sim.anyText(Cmd::ESP_debug, "GUI silent"));
+    CHECK(!sim.anyText(Cmd::ESP_error, "GUI silent"));
+    sim.command(Cmd::GUI_heartbeat);
+    CHECK(sim.count(Cmd::ESP_not_connected) == 1);
+    sim.command(Cmd::GUI_heartbeat);
+    CHECK(sim.count(Cmd::ESP_not_connected) == 1);
+    sim.run(1000);
+    CHECK(sim.sm.state() == State::Idle);
 }
 
 TEST(force_sign) {

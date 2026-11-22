@@ -58,6 +58,7 @@ namespace DynamiX_HMI.Serial
         ESP_debug = 4,              // message only shown in debug mode
         ESP_run_accepted = 5,
         ESP_run_denied = 55,        // TODO
+        ESP_not_connected = 56,     // answer to a heartbeat: the ESP isn't linked to us (rebooted, or it timed out)
         ESP_run_starting = 6,
         ESP_run_finished = 7,
         ESP_emergency = 8,          // e-stop // also pin 35 HIGH
@@ -87,6 +88,7 @@ namespace DynamiX_HMI.Serial
         GUI_send_sequence = 42, // payload: 1 byte for sequence order, 1 byte number of cycle, followed by encoded drive command
         GUI_force_reboot = 43,
         GUI_set_failsafe = 44, // send the forcefailsafe limit
+        GUI_heartbeat = 45, // ping every 200 ms; the ESP stops the motor after 300 ms of silence
 
         // optionnal category
         SND_example = 21, // flag of commands ment to be sent through serial port

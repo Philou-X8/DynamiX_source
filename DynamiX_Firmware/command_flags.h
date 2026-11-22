@@ -31,7 +31,8 @@ constexpr uint8_t ESP_calibration_data = 50; // end of a run calibration. payloa
                                              // top at slow speed); int24 each, raw counts
 constexpr uint8_t ESP_sequence_separator = 51; // payload: start(4), end(4) of a step's section, in
                                                // microseconds since the run started (same clock as the points)
-constexpr uint8_t ESP_live_data       = 52;  // every HEARTBEAT_PERIOD_MS, in every state. payload: position,
+constexpr uint8_t ESP_live_data       = 52;  // every HEARTBEAT_PERIOD_MS, in every state (it is also what tells the
+                                             // GUI the ESP is alive, see GUI_heartbeat). payload: position,
                                              // stroke min, stroke max, force (int24 each, raw counts),
                                              // temperature (int24, 0.01 degC, IR sensor). 0 for what isn't
                                              // known (no stroke before a TAR or a calibration, sensors not
@@ -41,6 +42,9 @@ constexpr uint8_t ESP_tar_data        = 53;  // end of a TAR or a GUI_bottom_out
                                              // int24 each, raw counts
 constexpr uint8_t ESP_run_denied      = 55;  // the run request / calibration / start was refused or failed
                                              // before the run started; the ESP is back to Idle (or Panic)
+constexpr uint8_t ESP_not_connected   = 56;  // answer to a GUI_heartbeat when no GUI was linked: the ESP rebooted,
+                                             // or it stopped the motor after GUI_TIMEOUT_MS of silence. The GUI
+                                             // answers with GUI_check_connection.
 
 // --- GUI -> ESP ------------------------------------------------------------------
 constexpr uint8_t GUI_check_connection = 12; // ping; also stops everything and returns to Idle
@@ -60,5 +64,9 @@ constexpr uint8_t GUI_send_sequence    = 42; // payload (10 bytes): order(1), nu
 constexpr uint8_t GUI_force_reboot     = 43; // stop the motor and restart the ESP
 constexpr uint8_t GUI_set_failsafe     = 44; // any state. payload: force min(int24), force max(int24), raw
                                              // counts: the motor stops (Panic) when the force leaves it
+constexpr uint8_t GUI_heartbeat        = 45; // no payload. The GUI sends it every 200 ms from its UI thread, so a
+                                             // closed, crashed or frozen GUI stops sending it. Any command counts
+                                             // as a sign of life; once a GUI has sent one, GUI_TIMEOUT_MS of
+                                             // silence stops the motor (config.h)
 
 } // namespace Cmd

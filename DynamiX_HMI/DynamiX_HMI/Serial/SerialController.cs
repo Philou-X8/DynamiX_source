@@ -19,6 +19,10 @@ namespace DynamiX_HMI.Serial
         private Action<List<DataPointRaw>>? guiPointsHandle;
         private Action<CommandPacket>? guiCommandHandle;
 
+        // Environment.TickCount64 of the last complete frame (data or command) from the ESP. Written by the
+        // serial thread, read by the UI thread's heartbeat timer.
+        private long lastHeardMs;
+
         private Action<string>? guiDelegate; // old
         private Action<List<int>>? guiDelegateList; // old
 
@@ -40,6 +44,17 @@ namespace DynamiX_HMI.Serial
         public bool IsConnected()
         {
             return sPort.IsOpen;
+        }
+
+        /// <summary>
+        /// Milliseconds since the last complete frame came from the ESP (it sends live data every
+        /// 200 ms, in every state). Counts from the moment the port was opened until the first one.
+        /// </summary>
+        public long SilenceMs => Environment.TickCount64 - Interlocked.Read(ref lastHeardMs);
+
+        private void MarkHeard()
+        {
+            Interlocked.Exchange(ref lastHeardMs, Environment.TickCount64);
         }
 
         public bool TryGetName(out string name)
@@ -80,6 +95,7 @@ namespace DynamiX_HMI.Serial
                 if (sPort.IsOpen)
                 {
                     sPort.ReadExisting(); // flush buffer
+                    MarkHeard();
                 }
                 //CallGuiHandle(new CommandPacket(CommandFlags.GUI_check_connection, ""));
                 //SendGuiCommand(new CommandPacket(CommandFlags.GUI_check_connection, ""));
@@ -287,11 +303,13 @@ namespace DynamiX_HMI.Serial
                 serialDecoder.Decode(arr);
                 if (serialDecoder.TryGetPoints(out List<DataPointRaw> points))
                 {
+                    MarkHeard();
                     CallGuiHandle(points);
                 }
                 // one read can contain several commands, hand them over in order
                 while (serialDecoder.TryGetCommand(out CommandPacket command))
                 {
+                    MarkHeard();
                     CallGuiHandle(command);
                 }
             }

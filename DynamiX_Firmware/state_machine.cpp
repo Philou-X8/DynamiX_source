@@ -72,6 +72,19 @@ void StateMachine::pollDrive() {
 }
 
 void StateMachine::handleCommand(const Command& command, uint32_t nowMs) {
+    // Any command shows the GUI is alive. A heartbeat from a GUI that wasn't linked means
+    // the ESP lost the link (it rebooted, or it timed out and stopped the motor) and the
+    // GUI doesn't know: tell it, it answers with GUI_check_connection.
+    const bool wasLinked = guiLinked_;
+    guiLinked_ = true;
+    guiLastMs_ = nowMs;
+    if (command.flag == Cmd::GUI_heartbeat) {
+        if (!wasLinked) {
+            gui_->send(Cmd::ESP_not_connected);
+        }
+        return;
+    }
+
     switch (command.flag) {
         case Cmd::GUI_check_connection:
             abort();
@@ -150,6 +163,9 @@ void StateMachine::onSample(const SensorSample& sample, uint32_t nowMs) {
 }
 
 void StateMachine::tick(uint32_t nowMs) {
+    if (guiLinked_ && nowMs - guiLastMs_ > GUI_TIMEOUT_MS) {
+        onGuiLost(nowMs);
+    }
     if (nowMs - lastLiveDataMs_ >= HEARTBEAT_PERIOD_MS) {
         lastLiveDataMs_ = nowMs;
         sendLiveData(nowMs);
@@ -303,6 +319,26 @@ void StateMachine::onDebugDriveFrame(const Command& command) {
     }
     if (!drive_->sendFrame(command.payload, command.payloadSize)) {
         report(Cmd::ESP_error, "Bad drive frame");
+    }
+}
+
+// The GUI closed, crashed, froze or was unplugged: nobody is left to stop the motor, so
+// stop it. A Panic stays as it is: the motor is already stopped, and the GUI hears about
+// it when it connects again. The Idle case stops the motor too: the debug button can
+// run it from there.
+void StateMachine::onGuiLost(uint32_t nowMs) {
+    guiLinked_ = false;
+    const unsigned long silentMs = (unsigned long)(nowMs - guiLastMs_);
+    const State was = state_;
+    if (was == State::Panic) {
+        report(Cmd::ESP_debug, "GUI silent for %lu ms: link dropped", silentMs);
+        return;
+    }
+    abort(); // motor stopped, Idle; the points of a run so far are still sent
+    if (was == State::Idle) {
+        report(Cmd::ESP_debug, "GUI silent for %lu ms: link dropped", silentMs);
+    } else {
+        report(Cmd::ESP_error, "GUI silent for %lu ms: %s stopped", silentMs, stateName(was));
     }
 }
 

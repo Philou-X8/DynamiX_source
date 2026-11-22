@@ -49,6 +49,9 @@ namespace DynamiX_HMI.Serial
             connectionTimer = new System.Windows.Forms.Timer();
             connectionTimer.Interval = 2000; // in ms
             connectionTimer.Tick += new EventHandler(ConnectionTimeout);
+
+            // plug the machine in while the panel is open: the list is up to date when it is opened
+            comboBoxCom.DropDown += (s, e) => RefreshPorts();
         }
 
         public void BindSerialController(SerialController controller)
@@ -84,17 +87,48 @@ namespace DynamiX_HMI.Serial
             this.Hide();
         }
 
+        /// <summary>
+        /// Refills the port list. The selection stays on the port the operator picked if it is still
+        /// there, else the connected port, else the last port of the list: the machine is almost always
+        /// the last device plugged in, so Connect works right away.
+        /// </summary>
+        private void RefreshPorts()
+        {
+            string wanted = comboBoxCom.Text;
+            string connected = "";
+            if (serialPort?.TryGetName(out connected) ?? false)
+            {
+                wanted = connected;
+            }
+
+            listCom = SerialPort.GetPortNames().OrderBy(PortNumber).ThenBy(p => p, StringComparer.Ordinal).ToList();
+
+            // untouched list: leave it alone (an open drop-down flickers when its items are replaced)
+            if (!comboBoxCom.Items.Cast<object>().Select(o => o.ToString()).SequenceEqual(listCom))
+            {
+                comboBoxCom.Items.Clear();
+                comboBoxCom.Items.AddRange(listCom.ToArray());
+            }
+
+            int index = listCom.IndexOf(wanted);
+            if (index < 0)
+            {
+                index = listCom.Count - 1; // -1 (nothing selected) when there is no port at all
+            }
+            comboBoxCom.SelectedIndex = index;
+        }
+
+        /// <summary> "COM12" -> 12, so COM10 sorts after COM9. </summary>
+        private static int PortNumber(string port)
+        {
+            return port.Length > 3 && int.TryParse(port.AsSpan(3), out int n) ? n : int.MaxValue;
+        }
+
         private void RefreshUI()
         {
             try
             {
-                listCom = SerialPort.GetPortNames().ToList();
-
-                comboBoxCom.Items.Clear();
-                comboBoxCom.Items.AddRange(SerialPort.GetPortNames());
-                string name = "";
-                bool isConnected = serialPort?.TryGetName(out name) ?? false;
-                comboBoxCom.SelectedIndex = comboBoxCom.Items.IndexOf(name);
+                RefreshPorts();
 
                 comboBoxBaud.Items.Clear();
                 comboBoxBaud.Items.AddRange(listBaud.ToArray());
@@ -211,6 +245,20 @@ namespace DynamiX_HMI.Serial
 
             //CallGuiHandle(new CommandPacket(CommandFlags.GUI_disconnected, "Connection handshake failed"));
         }
+        /// <summary> A handshake is under way (the ESP lost the link, or the user just connected): give it 2 s. </summary>
+        public void StartConnectionTimeout()
+        {
+            connectionTimer.Stop();
+            connectionTimer.Start();
+        }
+
+        /// <summary> The ESP stopped answering and the port was closed. </summary>
+        public void ConnectionLost(string message)
+        {
+            connectionTimer.Stop();
+            messageSatus.Text = message;
+        }
+
         public void ConnectionConfirmed()
         {
             connectionTimer.Stop();

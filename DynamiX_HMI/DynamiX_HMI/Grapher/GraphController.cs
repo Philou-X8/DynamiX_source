@@ -115,6 +115,7 @@ namespace DynamiX_HMI.Grapher
         private List<DataCalibration> pendingMetadata = new List<DataCalibration>();
 
         private int runNumber = 0;
+        private bool runInProgress = false; // BeginRun() was called and FinishRun() wasn't yet
         private int sectionCount = 0;    // separators received this run
         private int sectionsHandled = 0; // of those, the ones already cut out of the buffer
 
@@ -125,9 +126,13 @@ namespace DynamiX_HMI.Grapher
             graphPanel = graph;
         }
 
+        /// <summary> True between BeginRun() and FinishRun(): points are arriving for a run that isn't closed yet. </summary>
+        public bool RunInProgress => runInProgress;
+
         /// <summary> Start of a run: forget the points and sections of the previous one. </summary>
         public void BeginRun()
         {
+            runInProgress = true;
             buffer = new List<DataPointUnit>();
             pendingSections.Clear();
             pendingMetadata.Clear();
@@ -284,6 +289,7 @@ namespace DynamiX_HMI.Grapher
         /// </summary>
         public void FinishRun()
         {
+            runInProgress = false;
             EmitReadySections(true);
 
             if (sectionCount == 0 && buffer.Count > 0)

@@ -23,6 +23,8 @@ class PointBuffer;
 //        --reset button on the machine (relay closed again)--> Idle
 //   any state --GUI_abort / GUI_check_connection--> Idle (motor stopped),
 //        except Panic while the safety circuit is open
+//   any state --no sign of life from the GUI for GUI_TIMEOUT_MS--> Idle (motor stopped),
+//        except Panic, which stays. The GUI is told when it comes back (ESP_not_connected).
 enum class State : uint8_t {
     Idle,        // motor stopped, nothing measured
     Panic,       // a fault stopped the motor. Left by the machine's reset button for a
@@ -115,6 +117,7 @@ private:
     void onTarRequest(bool measureEmptyLoad, uint32_t nowMs);
     void onDebugDriveFrame(const Command& command);
     void onReboot();
+    void onGuiLost(uint32_t nowMs);
 
     // --- Per sample, per state
     bool safetyChecksPass();
@@ -179,6 +182,10 @@ private:
     bool panicNeedsGui_ = false;       // a software fault: GUI_abort acknowledges it
     uint32_t lastLiveDataMs_ = 0;
     int32_t temperature_ = 0;          // 0.01 degC, 0 = unknown
+
+    // --- GUI link: linked by the first command, dropped after GUI_TIMEOUT_MS without one
+    bool guiLinked_ = false;
+    uint32_t guiLastMs_ = 0;           // when the last command arrived
 
     // --- Sensors (every new sample)
     bool haveSample_ = false;

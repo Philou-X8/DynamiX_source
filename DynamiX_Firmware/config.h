@@ -90,6 +90,15 @@ constexpr uint16_t DRIVE_COMM_TIMEOUT_DECISECONDS = (HEARTBEAT_PERIOD_MS + 100 +
 static_assert(DRIVE_COMM_TIMEOUT_DECISECONDS * 100 > HEARTBEAT_PERIOD_MS,
               "the drive timeout must be longer than the heartbeat");
 
+// GUI watchdog. The GUI pings (GUI_heartbeat) every 200 ms from its UI thread, so a
+// GUI that is closed, crashed, frozen or unplugged stops pinging. The ESP is powered
+// by the PC and would otherwise keep the motor running. Once a GUI has sent anything,
+// this much silence stops the motor and the ESP goes back to Idle (a Panic stays one).
+// Same idea as the drive's timeout above: a single lost ping already trips it (200 ms
+// period, so ~100 ms of slack before the next one is late). The GUI's side of the
+// heartbeat is the live data above: the GUI disconnects when it stops arriving.
+constexpr uint32_t GUI_TIMEOUT_MS = 300;
+
 // --- ADC (ADS1256 #1) ----------------------------------------------------------
 // Values from the single-board test (adc_test.ino, SINGLE_BOARD mode).
 constexpr uint8_t ADC_STATUS = 0x00;   // MSB first, auto-calibration off, input buffer off

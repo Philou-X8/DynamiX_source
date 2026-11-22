@@ -53,6 +53,15 @@ namespace DynamiX_HMI.Sequencer
                 StateDelegate = DoStateConnecting;
                 return StateTransition.Connecting;
             }
+            // The ESP answered a heartbeat with "not connected": it rebooted, or it dropped us after
+            // a silence and stopped the motor. Whatever we thought we were doing is over: shake hands again.
+            else if (command.flag == CommandFlags.ESP_not_connected
+                     && StateDelegate != DoStateDisconnected
+                     && StateDelegate != DoStateConnecting)
+            {
+                StateDelegate = DoStateConnecting;
+                return StateTransition.Connecting;
+            }
             // The ESP stopped the motor (e-stop, door, drive fault, or a fault it found itself):
             // Panic from any connected state. The ESP sends it again on each reconnection.
             else if (command.flag == CommandFlags.ESP_emergency

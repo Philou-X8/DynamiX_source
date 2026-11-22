@@ -30,10 +30,14 @@ namespace DynamiX_HMI
 
         private bool machineConnected; // TODO: move this to machineController like the live graph flag
 
-        private List<DataPointUnit> pointHistory = new List<DataPointUnit>();
-        private string lastMessage;
-
-        private System.Windows.Forms.Timer myTimer;
+        // Heartbeat, both ways, from one timer on the UI thread (so a frozen GUI stops pinging):
+        //  - GUI -> ESP: GUI_heartbeat every HeartbeatPeriodMs. The ESP stops the motor after 300 ms of
+        //    silence (GUI_TIMEOUT_MS in config.h): a late tick is a stopped run.
+        //  - ESP -> GUI: the ESP sends live data every 200 ms, in every state. Nothing from it for
+        //    EspTimeoutMs and the port is closed and the machine goes to Disconnected.
+        private const int HeartbeatPeriodMs = 200;
+        private const int EspTimeoutMs = 1000;
+        private System.Windows.Forms.Timer heartbeatTimer;
 
         private DataCalibration calibrationMetadata;
         // Calibration stroke may differ from the TAR stroke by this fraction before we warn
@@ -65,23 +69,13 @@ namespace DynamiX_HMI
 
             calibrationMetadata = new DataCalibration();
 
-            //serialForm = new SerialForm();
 
-            //serialForm.TopLevel = false;
-            //leftGridLayout.Controls.Add(serialForm, 0, 0);
-            //serialForm.Dock = DockStyle.Fill;
-            ////flowLayoutPanel1.Width = serialForm.Width;
-            ////serialForm.BringToFront();
-            //serialForm.Show();
-
-            myTimer = new System.Windows.Forms.Timer();
-            myTimer.Interval = 100; // in ms
-            myTimer.Tick += new EventHandler(MyTimer_Tick);
-            //myTimer.Start(); // Start the timer
+            heartbeatTimer = new System.Windows.Forms.Timer();
+            heartbeatTimer.Interval = HeartbeatPeriodMs;
+            heartbeatTimer.Tick += new EventHandler(HeartbeatTimer_Tick);
+            heartbeatTimer.Start(); // always on: it only does something while the machine is connected
 
 
-
-            //serialForm.SetTestDelegate(TextHandle);
         }
 
 
@@ -131,6 +125,11 @@ namespace DynamiX_HMI
                 case CommandFlags.GUI_abort:
                     logger.SetMessage("Run Aborted");
                     serialController.SendGuiCommand(command); // CommandFlags.GUI_abort
+                    break;
+
+                case CommandFlags.ESP_not_connected:
+                    // the state machine below sends the GUI back to Connecting (new handshake)
+                    logger.SetMessage("ESP32 dropped the link (restarted, or it lost the GUI): reconnecting");
                     break;
 
                 case CommandFlags.ESP_tar_data:
@@ -280,6 +279,17 @@ namespace DynamiX_HMI
         // State transitions
         // --------------------------------------------------------
 
+        /// <summary>
+        /// The link dropped during a run: keep the points received so far, if any, as the run's result.
+        /// </summary>
+        private void FinishRunIfInProgress()
+        {
+            if (graphController.RunInProgress)
+            {
+                graphController.FinishRun();
+            }
+        }
+
         // 
         // State transition handlers
         //
@@ -291,6 +301,8 @@ namespace DynamiX_HMI
             // Transition:
 
             machineConnected = false;
+
+            FinishRunIfInProgress();
 
             buttonConnection.Text = "Not Connected";
             logger.SetState("State Disconnected");
@@ -309,8 +321,11 @@ namespace DynamiX_HMI
 
             machineConnected = false;
 
+            FinishRunIfInProgress(); // the ESP lost the link in the middle of a run
+
             buttonConnection.Text = "Connected: Unknown";
             logger.SetState("State Connecting");
+            serialPanel.StartConnectionTimeout(); // no answer in 2 s: the panel closes the port
             // TODO
             serialController.SendGuiCommand(new CommandPacket(CommandFlags.GUI_check_connection));
         }
@@ -348,10 +363,9 @@ namespace DynamiX_HMI
         {
             // Condition: any connected state
             // Trigger: <ESP_emergency> (the ESP has already stopped the motor)
-            // Actions: stop the live view, tell the user how to get out
+            // Actions: tell the user how to get out (the heartbeat goes on: the ESP still needs it)
             // Transition: Idle on <ESP_emergency_clear>
             logger.SetState("State PANIC");
-            myTimer.Stop();
             logger.SetMessage("PANIC: motor stopped. Fix the cause, press the yellow reset button on the machine, "
                               + "then Stop if the panic doesn't clear by itself");
         }
@@ -445,8 +459,6 @@ namespace DynamiX_HMI
             // Actions: Set graphs to live view mode
             // Transition: Running state
             logger.SetState("State Running");
-
-            myTimer.Start();
         }
         private void EnterStateFinished()
         {
@@ -456,8 +468,6 @@ namespace DynamiX_HMI
             // Transition: Idle State
             logger.SetState("State Finished");
 
-            myTimer.Stop();
-
             graphController.FinishRun();
 
             HandleSerialCommand(new CommandPacket(CommandFlags.GUI_run_completed, "Run finished, graph ready"));
@@ -465,31 +475,42 @@ namespace DynamiX_HMI
         }
 
         // --------------------------------------------------------
-        // 
+        // Heartbeat
         // --------------------------------------------------------
 
-
-
-        private void MyTimer_Tick(object sender, EventArgs e)
+        private void HeartbeatTimer_Tick(object? sender, EventArgs e)
         {
-            // Code to be executed every second
-            //labelConnection.Text = graphController.GetPointsCount().ToString();
-            //labelConnection.Text = lastMessage;
-            //lastMessage = "";
-
-            List<DataPointUnit> points = graphController.GetLatest(16);
-            //label2.Text = "";
-            String display_str = "";
-            for (int i = 0; i < points.Count; i++)
+            // Only once the ESP answered the handshake. Before that the connection panel's own
+            // timeout decides, and the ESP may still be starting up.
+            if (!machineConnected || !serialController.IsConnected())
             {
-                display_str += "Point " + i.ToString() + ": "
-                    + "t=" + points[i].time + " , "
-                    + "f=" + points[i].force + " , "
-                    + "p=" + points[i].position + "\n";
+                return;
             }
-            // The graphs are no longer drawn here: GraphController pushes new points to the GraphPanel as they arrive
+
+            if (serialController.SilenceMs > EspTimeoutMs)
+            {
+                EspLost();
+                return;
+            }
+
+            serialController.SendGuiCommand(new CommandPacket(CommandFlags.GUI_heartbeat));
         }
 
+        /// <summary>
+        /// Nothing came from the ESP for EspTimeoutMs (unplugged, crashed, restarting): close the port
+        /// and send the machine to Disconnected. The drive has its own timeout to stop the motor.
+        /// </summary>
+        private void EspLost()
+        {
+            const string message = "ESP32 stopped responding";
+            serialController.Disconnect(out _);
+            serialPanel.ConnectionLost(message);
+            SafeHandleSerialCommand(new CommandPacket(CommandFlags.GUI_disconnected, message + ": disconnected"));
+        }
+
+        // --------------------------------------------------------
+        // 
+        // --------------------------------------------------------
 
         private int DecodePayloadInt(string payload, int startByte)
         {
