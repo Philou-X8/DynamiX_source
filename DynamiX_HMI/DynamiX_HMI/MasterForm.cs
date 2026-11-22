@@ -1,4 +1,4 @@
-﻿            ﻿using DynamiX_HMI.Grapher;
+﻿using DynamiX_HMI.Grapher;
 using DynamiX_HMI.Menus;
 using DynamiX_HMI.Sequencer;
 using DynamiX_HMI.Serial;
