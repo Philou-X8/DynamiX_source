@@ -8,6 +8,7 @@
     <AssemblyName>DynamiX_HMI</AssemblyName>
     <RootNamespace>DynamiX_HMI</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Configurations>Debug;Release;Publish</Configurations>
   </PropertyGroup>
 
   <ItemGroup>
