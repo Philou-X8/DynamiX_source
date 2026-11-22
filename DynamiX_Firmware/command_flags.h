@@ -3,7 +3,7 @@
 
 // Command flags: the first byte of every command frame body (see protocol.h).
 //
-// Must mirror the CommandFlags enum in CSharpProto1/Serial/SerialDecoder.cs.
+// Must mirror the CommandFlags enum in DynamiX_HMI/Serial/SerialDecoder.cs.
 // Only flags that travel over the wire are listed here; the C# enum also holds
 // GUI-internal events (GUI_click_start, GUI_disconnected, ...). If a value
 // changes, change it in both places.
