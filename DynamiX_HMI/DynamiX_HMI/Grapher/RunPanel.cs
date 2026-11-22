@@ -6,46 +6,7 @@ using System.Windows.Forms;
 
 namespace DynamiX_HMI.Grapher
 {
-    /// <summary>One speed of a run in the run list.</summary>
-    public class StepEntry
-    {
-        public RunEntry Run;
-        public StepInfo Info;
-        public StepResult? Result;      // after the run's data is analysed
-        public bool Visible = true;
-        public Color? Custom;           // null = same colour as its run
-        public Color Shown => Custom ?? Run.Shown;
-
-        public StepEntry(RunEntry run, StepInfo info)
-        {
-            Run = run;
-            Info = info;
-        }
-    }
-
-    /// <summary>
-    /// One run (a sweep of speeds) in the run list. Runs read from a file only have their header until they are
-    /// shown: then the samples are loaded and analysed.
-    /// </summary>
-    public class RunEntry
-    {
-        public string Path = "";
-        public string Display = "";
-        public TestRun Run;
-        public bool Loaded;             // the samples are in Run
-        public bool InProgress;         // the ESP32 is still measuring it
-        public List<StepResult> Results = new List<StepResult>();
-        public List<StepEntry> Steps = new List<StepEntry>();
-        public Color? Custom;
-        public Color Shown;             // colour used in the graphs this time
-
-        public RunEntry(TestRun run)
-        {
-            Run = run;
-            Display = run.Name;
-            Path = run.FilePath;
-        }
-    }
+    
 
     /// <summary>
     /// The run list: each run is a node with its speeds under it. Ticking a run shows it in the graphs, ticking
@@ -53,16 +14,6 @@ namespace DynamiX_HMI.Grapher
     /// </summary>
     public partial class RunPanel : UserControl
     {
-        private readonly TreeView tree = new CheckTreeView
-        {
-            Dock = DockStyle.Fill,
-            CheckBoxes = true,
-            HideSelection = false,
-            ShowNodeToolTips = true,
-            ItemHeight = 20,
-            ShowRootLines = true,
-        };
-        private readonly ImageList swatches = new ImageList { ImageSize = new Size(14, 14), ColorDepth = ColorDepth.Depth32Bit };
         private readonly Dictionary<int, int> swatchIndex = new Dictionary<int, int>();
         private readonly Dictionary<RunEntry, TreeNode> nodes = new Dictionary<RunEntry, TreeNode>();
         private readonly List<RunEntry> entries = new List<RunEntry>();
@@ -83,51 +34,64 @@ namespace DynamiX_HMI.Grapher
 
         public RunPanel()
         {
-            tree.ImageList = swatches;
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Height = 34 };
-            Button open = MakeButton("Open...");
-            Button export = MakeButton("Export summary...");
-            Button refresh = MakeButton("Refresh");
-            open.Click += (s, e) => OpenFiles();
-            export.Click += (s, e) => ExportRequested?.Invoke();
-            refresh.Click += (s, e) => RefreshRequested?.Invoke();
-            buttons.Controls.AddRange(new Control[] { open, export, refresh });
-
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            buttons.AutoSize = true;
-            layout.Controls.Add(buttons, 0, 0);
-            layout.Controls.Add(tree, 0, 1);
-            Controls.Add(layout);
-
-            tree.AfterCheck += (s, e) => OnChecked(e.Node!);
-            tree.AfterExpand += (s, e) => { if (e.Node?.Tag is RunEntry r) expanded.Add(r.Path); };
-            tree.AfterCollapse += (s, e) => { if (e.Node?.Tag is RunEntry r) expanded.Remove(r.Path); };
-            tree.NodeMouseClick += (s, e) =>
-            {
-                tree.SelectedNode = e.Node;
-                if (e.Button == MouseButtons.Right)
-                {
-                    BuildMenu(e.Node!).Show(tree, e.Location);
-                }
-            };
-            tree.MouseClick += (s, e) =>
-            {
-                // a click on the colour square picks a colour
-                TreeNode? n = tree.GetNodeAt(e.Location);
-                if (n != null && e.Button == MouseButtons.Left && SwatchBounds(n).Contains(e.Location))
-                {
-                    PickColour(n);
-                }
-            };
+            InitializeComponent();
         }
 
-        private static Button MakeButton(string text)
+        // ------------------------------------------------------------------ events (wired in RunPanel.Designer.cs)
+
+        private void buttonOpen_Click(object? sender, EventArgs e)
         {
-            return new Button { Text = text, AutoSize = true, Height = 26, Margin = new Padding(2) };
+            OpenFiles();
+        }
+
+        private void buttonExport_Click(object? sender, EventArgs e)
+        {
+            ExportRequested?.Invoke();
+        }
+
+        private void buttonRefresh_Click(object? sender, EventArgs e)
+        {
+            RefreshRequested?.Invoke();
+        }
+
+        private void tree_AfterCheck(object? sender, TreeViewEventArgs e)
+        {
+            OnChecked(e.Node!);
+        }
+
+        private void tree_AfterExpand(object? sender, TreeViewEventArgs e)
+        {
+            if (e.Node?.Tag is RunEntry r)
+            {
+                expanded.Add(r.Path);
+            }
+        }
+
+        private void tree_AfterCollapse(object? sender, TreeViewEventArgs e)
+        {
+            if (e.Node?.Tag is RunEntry r)
+            {
+                expanded.Remove(r.Path);
+            }
+        }
+
+        private void tree_NodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
+        {
+            tree.SelectedNode = e.Node;
+            if (e.Button == MouseButtons.Right)
+            {
+                BuildMenu(e.Node!).Show(tree, e.Location);
+            }
+        }
+
+        private void tree_MouseClick(object? sender, MouseEventArgs e)
+        {
+            // a click on the colour square picks a colour
+            TreeNode? n = tree.GetNodeAt(e.Location);
+            if (n != null && e.Button == MouseButtons.Left && SwatchBounds(n).Contains(e.Location))
+            {
+                PickColour(n);
+            }
         }
 
         public IReadOnlyList<RunEntry> Entries => entries;
@@ -487,29 +451,6 @@ namespace DynamiX_HMI.Grapher
             {
                 OpenRequested?.Invoke(dialog.FileNames);
             }
-        }
-    }
-
-    /// <summary>
-    /// TreeView with a fix for a Windows bug: a fast second click on a check box arrives as a double-click
-    /// and would not toggle it.
-    /// </summary>
-    internal sealed class CheckTreeView : TreeView
-    {
-        private const int WM_LBUTTONDBLCLK = 0x0203;
-        private const int WM_LBUTTONDOWN = 0x0201;
-
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == WM_LBUTTONDBLCLK)
-            {
-                var hit = HitTest(new Point(m.LParam.ToInt32() & 0xFFFF, (m.LParam.ToInt32() >> 16) & 0xFFFF));
-                if (hit.Location == TreeViewHitTestLocations.StateImage)
-                {
-                    m.Msg = WM_LBUTTONDOWN;
-                }
-            }
-            base.WndProc(ref m);
         }
     }
 }

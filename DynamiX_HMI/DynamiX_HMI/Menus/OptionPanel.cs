@@ -18,27 +18,12 @@ namespace DynamiX_HMI.Menus
     /// - A change that can't be used (a text that is not a number, a zero scale) is put back to its last good value.
     /// Everything runs on the UI thread.
     /// </summary>
-    public class OptionPanel : UserControl
+    public partial class OptionPanel : UserControl
     {
         private const int AverageSamples = 3; // live readings come every 200 ms: about the last 0.6 s
 
         private Action<CommandPacket>? serialCommandHandle;
         private (int min, int max)? lastSentFailsafe;
-
-        private readonly PropertyGrid grid = new PropertyGrid
-        {
-            Dock = DockStyle.Fill,
-            PropertySort = PropertySort.Categorized,
-            ToolbarVisible = false,
-            HelpVisible = true,
-        };
-        private readonly Label labelForce = new Label { AutoSize = true };
-        private readonly Label labelPosition = new Label { AutoSize = true };
-        private readonly Label labelStatus = new Label { Dock = DockStyle.Fill, AutoSize = false, Height = 40 };
-        private readonly TextBox textKnownForce = new TextBox { Text = "100", Width = 70 };
-        private readonly TextBox textPositionA = new TextBox { Text = "0", Width = 70 };
-        private readonly TextBox textPositionB = new TextBox { Text = "25", Width = 70 };
-        private readonly Label labelCaptured = new Label { AutoSize = true, Text = "A: -    B: -" };
 
         private readonly Queue<(int position, int force)> recent = new Queue<(int, int)>();
         private (double counts, double mm)? pointA, pointB;
@@ -48,24 +33,9 @@ namespace DynamiX_HMI.Menus
 
         public OptionPanel()
         {
+            InitializeComponent();
             Dock = DockStyle.Fill;
             grid.SelectedObject = AppSettings.Current;
-            grid.PropertyValueChanged += (s, e) => OnSettingEdited(e.ChangedItem?.Label ?? "setting");
-
-            // One tab per job: the settings, the calibration tools, the machine and files
-            var tabs = new TabControl { Dock = DockStyle.Fill };
-            var pageSettings = new TabPage("Settings");
-            pageSettings.Controls.Add(grid);
-            tabs.TabPages.Add(pageSettings);
-            BuildToolTabs(tabs);
-
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
-            layout.Controls.Add(tabs, 0, 0);
-            layout.Controls.Add(labelStatus, 0, 1);
-            Controls.Add(layout);
 
             if (AppSettings.StartupError.Length > 0)
             {
@@ -84,98 +54,57 @@ namespace DynamiX_HMI.Menus
             serialCommandHandle = commandDelegate;
         }
 
-        // ------------------------------------------------------------------ tools
+        // ------------------------------------------------------------------ events (wired in OptionPanel.Designer.cs)
 
-        private static TabPage ToolPage(string title, params Control[] groups)
+        private void grid_PropertyValueChanged(object? s, PropertyValueChangedEventArgs e)
         {
-            var page = new TabPage(title);
-            var flow = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
-            };
-            flow.Controls.AddRange(groups);
-            page.Controls.Add(flow);
-            return page;
+            OnSettingEdited(e.ChangedItem?.Label ?? "setting");
         }
 
-        private void BuildToolTabs(TabControl tabs)
+        private void buttonZeroForce_Click(object? sender, EventArgs e)
         {
-            GroupBox live = Group("Live readings");
-            live.Controls.Add(Stack(labelForce, labelPosition));
-
-            GroupBox force = Group("Force calibration");
-            var zero = Button("Zero force (nothing on the load cell)");
-            zero.Click += (s, e) => ZeroForce();
-            var setGain = Button("Set gain from the known force");
-            setGain.Click += (s, e) => SetForceGain();
-            force.Controls.Add(Stack(
-                Hint("1. With NOTHING on the load cell: press Zero."),
-                zero,
-                Hint("2. Put a known weight or force on it, enter it:"),
-                Row(new Label { Text = "Known force (N)", AutoSize = true, Anchor = AnchorStyles.Left }, textKnownForce),
-                setGain));
-
-            GroupBox position = Group("Position calibration");
-            var captureA = Button("Capture A");
-            captureA.Click += (s, e) => CapturePosition(true);
-            var captureB = Button("Capture B");
-            captureB.Click += (s, e) => CapturePosition(false);
-            position.Controls.Add(Stack(
-                Hint("Move the stroke to two known positions, enter each position, capture it. The scale is computed once both are captured."),
-                Row(new Label { Text = "Position A (mm)", AutoSize = true, Anchor = AnchorStyles.Left }, textPositionA, captureA),
-                Row(new Label { Text = "Position B (mm)", AutoSize = true, Anchor = AnchorStyles.Left }, textPositionB, captureB),
-                labelCaptured));
-
-            GroupBox esp = Group("ESP32");
-            var resend = Button("Send the force limit again");
-            resend.Click += (s, e) => { SendFailsafe(); Status("Force limit sent"); };
-            var reboot = Button("Reboot the ESP32");
-            reboot.Click += (s, e) => serialCommandHandle?.Invoke(new CommandPacket(CommandFlags.GUI_force_reboot));
-            esp.Controls.Add(Stack(resend, reboot));
-
-            GroupBox files = Group("Files");
-            var openFolder = Button("Open the data folder");
-            openFolder.Click += (s, e) => OpenDataFolder();
-            var reload = Button("Reload the settings file");
-            reload.Click += (s, e) => ReloadSettings();
-            var reset = Button("Reset the sensor calibration to the defaults");
-            reset.Click += (s, e) => ResetCalibration();
-            files.Controls.Add(Stack(openFolder, reload, reset));
-
-            tabs.TabPages.Add(ToolPage("Sensor calibration", live, force, position));
-            tabs.TabPages.Add(ToolPage("ESP32 and files", esp, files));
+            ZeroForce();
         }
 
-        private static GroupBox Group(string text)
+        private void buttonSetGain_Click(object? sender, EventArgs e)
         {
-            return new GroupBox { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Width = 330, Padding = new Padding(6) };
+            SetForceGain();
         }
 
-        private static Button Button(string text)
+        private void buttonCaptureA_Click(object? sender, EventArgs e)
         {
-            return new Button { Text = text, AutoSize = true, Margin = new Padding(2, 3, 2, 3) };
+            CapturePosition(true);
         }
 
-        private static Label Hint(string text)
+        private void buttonCaptureB_Click(object? sender, EventArgs e)
         {
-            return new Label { Text = text, AutoSize = true, MaximumSize = new Size(310, 0), ForeColor = SystemColors.GrayText };
+            CapturePosition(false);
         }
 
-        private static Control Row(params Control[] controls)
+        private void buttonSendLimit_Click(object? sender, EventArgs e)
         {
-            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
-            row.Controls.AddRange(controls);
-            return row;
+            SendFailsafe();
+            Status("Force limit sent");
         }
 
-        private static Control Stack(params Control[] controls)
+        private void buttonReboot_Click(object? sender, EventArgs e)
         {
-            var panel = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            };
-            panel.Controls.AddRange(controls);
-            return panel;
+            serialCommandHandle?.Invoke(new CommandPacket(CommandFlags.GUI_force_reboot));
+        }
+
+        private void buttonOpenFolder_Click(object? sender, EventArgs e)
+        {
+            OpenDataFolder();
+        }
+
+        private void buttonReloadSettings_Click(object? sender, EventArgs e)
+        {
+            ReloadSettings();
+        }
+
+        private void buttonResetCalibration_Click(object? sender, EventArgs e)
+        {
+            ResetCalibration();
         }
 
         // ------------------------------------------------------------------ live readings

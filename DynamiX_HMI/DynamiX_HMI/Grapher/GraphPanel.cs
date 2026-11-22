@@ -15,95 +15,25 @@ namespace DynamiX_HMI.Grapher
     ///   Debug       the last points as text
     /// Every plot zooms with the wheel or a box, pans with the right button, and shows the nearest point on hover.
     /// </summary>
-    public class GraphPanel : UserControl
+    public partial class GraphPanel : UserControl
     {
         private const int MaxTimePoints = 6000;
 
-        private readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill };
-        private readonly PlotControl plotLiveF = NewPlot(), plotLiveX = NewPlot();
-        private readonly PlotControl plotFx = NewPlot(), plotFv = NewPlot(), plotPeak = NewPlot();
-        private readonly PlotControl plotTimeF = NewPlot(), plotTimeX = NewPlot(), plotTimeV = NewPlot();
-        private readonly Label labelStats = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6, 0, 0, 0), Text = "Waiting for data..." };
-        private readonly Label labelDebug = new Label { Dock = DockStyle.Fill, Font = new Font("Consolas", 9F), Padding = new Padding(6) };
-        private readonly DataGridView table = new DataGridView
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-            RowHeadersVisible = false,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-            BackgroundColor = Color.White,
-            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-        };
-        private readonly TabPage pageLive = new TabPage("Live");
-        private readonly System.Windows.Forms.Timer liveTimer = new System.Windows.Forms.Timer();
         private LiveBuffer? live;
 
         public GraphPanel()
         {
+            InitializeComponent();
             Dock = DockStyle.Fill;
 
-            // Live: stats on top, force and position under each other
-            var liveLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
-            liveLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            liveLayout.Controls.Add(labelStats, 0, 0);
-            liveLayout.Controls.Add(plotLiveF, 0, 1);
-            liveLayout.Controls.Add(plotLiveX, 0, 2);
-            pageLive.Controls.Add(liveLayout);
-
-            var pageFx = new TabPage("Force/Pos");
-            pageFx.Controls.Add(plotFx);
-            var pageFv = new TabPage("Force/Speed");
-            pageFv.Controls.Add(plotFv);
-
-            var pagePeak = new TabPage("Peak");
-            var peakSplit = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-            peakSplit.Panel1.Controls.Add(plotPeak);
-            peakSplit.Panel2.Controls.Add(table);
-            pagePeak.Controls.Add(peakSplit);
-            peakSplit.SplitterDistance = Math.Max(100, peakSplit.Height * 2 / 3);
-            table.Columns.AddRange(
-                new DataGridViewTextBoxColumn { HeaderText = "Run" },
-                new DataGridViewTextBoxColumn { HeaderText = "Target" },
-                new DataGridViewTextBoxColumn { HeaderText = "Drive Hz" },
-                new DataGridViewTextBoxColumn { HeaderText = "Cycles" },
-                new DataGridViewTextBoxColumn { HeaderText = "Comp. speed" },
-                new DataGridViewTextBoxColumn { HeaderText = "Comp. force" },
-                new DataGridViewTextBoxColumn { HeaderText = "Reb. speed" },
-                new DataGridViewTextBoxColumn { HeaderText = "Reb. force" },
-                new DataGridViewTextBoxColumn { HeaderText = "Temp. °C" });
-
-            var pageTime = new TabPage("Time");
-            var timeLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
-            timeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            for (int i = 0; i < 3; i++)
-            {
-                timeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3F));
-            }
-            timeLayout.Controls.Add(plotTimeF, 0, 0);
-            timeLayout.Controls.Add(plotTimeX, 0, 1);
-            timeLayout.Controls.Add(plotTimeV, 0, 2);
-            pageTime.Controls.Add(timeLayout);
-
-            var pageDebug = new TabPage("Debug");
-            pageDebug.Controls.Add(labelDebug);
-
-            tabs.TabPages.AddRange(new[] { pageLive, pageFx, pageFv, pagePeak, pageTime, pageDebug });
-            Controls.Add(tabs);
-
-            liveTimer.Tick += (s, e) => RefreshLive();
             ApplySettings();
             liveTimer.Start();
             ShowRuns(Array.Empty<RunEntry>());
         }
 
-        private static PlotControl NewPlot()
+        private void liveTimer_Tick(object? sender, EventArgs e)
         {
-            return new PlotControl { Dock = DockStyle.Fill };
+            RefreshLive();
         }
 
         /// <summary> The live graphs read this buffer on every refresh. </summary>
