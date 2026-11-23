@@ -245,7 +245,7 @@ namespace DynamiX_HMI.Analysis
         /// <summary>A file name from the date, with a number added if another run already has it.</summary>
         public static string MakeFileName(string folder, DateTime date)
         {
-            string stem = Path.Combine(folder, date.ToString("yyyyMMdd_HHmmss", Inv));
+            string stem = Path.Combine(folder, date.ToString("yyMMdd_HHmmss", Inv));
             string path = stem + ".csv";
             for (int n = 2; File.Exists(path); n++)
             {

@@ -216,9 +216,13 @@ void StateMachine::onCalibrate(uint32_t nowMs) {
         return;
     }
     enterMotionState(State::Calibration, nowMs);
-    restForce_.start(nowMs, CALIBRATION_SETTLE_MS, CALIBRATION_REST_SAMPLES);
-    calibrationPhase_ = CalibrationPhase::BottomForce;
-    report(Cmd::ESP_debug, "Calibration: measuring the bottom force");
+    if (!startMotor(CALIBRATION_CENTIHZ)) {
+        return;
+    }
+    calibrationMotionStartMs_ = nowMs;
+    turnFinder_.start(STROKE_TURN_HYSTERESIS_COUNTS, STROKE_MIN_RANGE_COUNTS);
+    calibrationPhase_ = CalibrationPhase::FindStroke;
+    report(Cmd::ESP_debug, "Calibration: looking for the stroke");
 }
 
 // Accepted in any state: the window only depends on the load cell, and a
@@ -378,61 +382,56 @@ bool StateMachine::safetyChecksPass() {
 }
 
 // Run calibration, with the shock mounted (so the yoke starts near the bottom):
-// bottom force at rest, the stroke from one slow cycle, then the top force,
-// averaged through the top at an even slower speed. See config.h.
+// the stroke from one cycle at CALIBRATION_CENTIHZ, then, at the slower
+// CALIBRATION_FIT_CENTIHZ, one cycle for the static force line. See config.h.
 void StateMachine::updateCalibration(uint32_t nowMs) {
-    if (calibrationPhase_ != CalibrationPhase::BottomForce &&
-        nowMs - calibrationMotionStartMs_ >= CALIBRATION_TIMEOUT_MS) {
+    if (nowMs - calibrationMotionStartMs_ >= CALIBRATION_TIMEOUT_MS) {
         enterPanic(FaultReason::StrokeNotFound, "calibration not done within %lu s",
                    (unsigned long)(CALIBRATION_TIMEOUT_MS / 1000));
         return;
     }
     switch (calibrationPhase_) {
-        case CalibrationPhase::BottomForce:
-            if (!restForce_.update(force_, nowMs)) {
-                return;
-            }
-            bottomForce_ = restForce_.value();
-            if (!startMotor(CALIBRATION_CENTIHZ)) {
-                return;
-            }
-            calibrationMotionStartMs_ = nowMs;
-            turnFinder_.start(STROKE_TURN_HYSTERESIS_COUNTS, STROKE_MIN_RANGE_COUNTS);
-            calibrationPhase_ = CalibrationPhase::FindStroke;
-            report(Cmd::ESP_debug, "Calibration: bottom force %ld counts, looking for the stroke",
-                   (long)bottomForce_);
-            return;
-
         case CalibrationPhase::FindStroke:
             turnFinder_.update(position_);
             if (!turnFinder_.found()) {
                 return;
             }
             setStroke(turnFinder_.min(), turnFinder_.max());
-            approach_.start(strokeMin_, strokeMax_, !BOTTOM_AT_HIGH_POSITION, CALIBRATION_SLOW_PERMILLE);
-            calibrationPhase_ = CalibrationPhase::ApproachTop;
-            report(Cmd::ESP_debug, "Calibration: stroke %ld to %ld, going to the top", (long)strokeMin_,
-                   (long)strokeMax_);
-            return;
-
-        case CalibrationPhase::ApproachTop:
-            if (!approach_.update(position_)) {
-                return;
-            }
-            if (!drive_->setFrequency(CALIBRATION_TOP_CENTIHZ)) {
+            if (!drive_->setFrequency(CALIBRATION_FIT_CENTIHZ)) {
                 enterPanic(FaultReason::DriveFault, "drive command not sent");
                 return;
             }
-            topForceAverage_.start(strokeMin_, strokeMax_, !BOTTOM_AT_HIGH_POSITION,
-                                   CALIBRATION_TOP_WINDOW_PERMILLE);
-            calibrationPhase_ = CalibrationPhase::TopForce;
+            drive_->forgetRunningFrequency(); // the speed the drive reported before doesn't count
+            lastQueryMs_ = nowMs - DRIVE_QUERY_PERIOD_MS; // ask right away
+            startPhaseClock(nowMs);
+            calibrationPhase_ = CalibrationPhase::SlowDown;
+            report(Cmd::ESP_debug, "Calibration: stroke %ld to %ld, slowing to %u.%02u Hz", (long)strokeMin_,
+                   (long)strokeMax_, (unsigned)(CALIBRATION_FIT_CENTIHZ / 100), (unsigned)(CALIBRATION_FIT_CENTIHZ % 100));
             return;
 
-        case CalibrationPhase::TopForce:
-            if (!topForceAverage_.update(position_, force_)) {
+        case CalibrationPhase::SlowDown:
+            switch (checkSpeed(CALIBRATION_FIT_CENTIHZ, nowMs)) {
+                case SpeedCheck::Waiting:
+                    return;
+                case SpeedCheck::TimedOut:
+                    enterPanic(FaultReason::DriveFault, "didn't slow to %u.%02u Hz", (unsigned)(CALIBRATION_FIT_CENTIHZ / 100),
+                               (unsigned)(CALIBRATION_FIT_CENTIHZ % 100));
+                    return;
+                case SpeedCheck::Reached:
+                    break;
+            }
+            staticFit_.start(strokeMin_, strokeMax_, BOTTOM_AT_HIGH_POSITION, CALIBRATION_END_WINDOW_PERMILLE,
+                             STROKE_TURN_HYSTERESIS_COUNTS);
+            calibrationPhase_ = CalibrationPhase::Fit;
+            report(Cmd::ESP_debug, "Calibration: measuring the static force");
+            return;
+
+        case CalibrationPhase::Fit:
+            if (!staticFit_.update(position_, force_)) {
                 return;
             }
-            topForce_ = topForceAverage_.value();
+            bottomForce_ = staticFit_.bottomLine();
+            topForce_ = staticFit_.topLine();
             finishCalibration(nowMs);
             return;
     }
@@ -627,9 +626,9 @@ void StateMachine::finishRun() {
 void StateMachine::finishCalibration(uint32_t nowMs) {
     stopMotor();
     sendCalibrationData();
-    report(Cmd::ESP_message, "Calibration done: stroke %ld to %ld, bottom force %ld, top force %ld counts "
-           "(%lu samples at the top)", (long)strokeMin_, (long)strokeMax_, (long)bottomForce_, (long)topForce_,
-           (unsigned long)topForceAverage_.count());
+    report(Cmd::ESP_message, "Calibration done: stroke %ld to %ld, static force %ld at the bottom, %ld at the top "
+           "counts (%lu samples at the ends, %lu in the middle)", (long)strokeMin_, (long)strokeMax_, (long)bottomForce_,
+           (long)topForce_, (unsigned long)staticFit_.endSamples(), (unsigned long)staticFit_.branchSamples());
     state_ = State::Armed;
     armedSinceMs_ = nowMs;
 }
@@ -942,7 +941,7 @@ bool StateMachine::startMotor(uint16_t centiHz) {
     return true;
 }
 
-// ESP_calibration_data: [stroke min][stroke max][bottom force][top force], 24-bit raw counts.
+// ESP_calibration_data: [stroke min][stroke max][static force at the bottom][static force at the top], 24-bit raw counts.
 void StateMachine::sendCalibrationData() {
     uint8_t payload[12];
     writeInt24BE(strokeMin_, payload);

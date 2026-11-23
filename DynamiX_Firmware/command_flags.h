@@ -26,9 +26,9 @@ constexpr uint8_t ESP_emergency       = 8;   // the ESP went to Panic: motor sto
 constexpr uint8_t ESP_emergency_clear = 9;   // left Panic (after GUI_abort or GUI_check_connection)
 constexpr uint8_t ESP_door_open       = 10;  // (not used yet)
 constexpr uint8_t ESP_door_close      = 11;  // (not used yet)
-constexpr uint8_t ESP_calibration_data = 50; // end of a run calibration. payload: pos min, pos max, bottom
-                                             // force (at rest before moving), top force (averaged through the
-                                             // top at slow speed); int24 each, raw counts
+constexpr uint8_t ESP_calibration_data = 50; // end of a run calibration. payload: pos min, pos max, static
+                                             // force at the bottom and at the top of the stroke (a line fitted
+                                             // through one slow cycle, see StaticForceFit); int24 each, raw counts
 constexpr uint8_t ESP_sequence_separator = 51; // payload: start(4), end(4) of a step's section, in
                                                // microseconds since the run started (same clock as the points)
 constexpr uint8_t ESP_live_data       = 52;  // every HEARTBEAT_PERIOD_MS, in every state (it is also what tells the

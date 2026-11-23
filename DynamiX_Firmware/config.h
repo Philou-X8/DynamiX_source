@@ -186,25 +186,22 @@ constexpr uint32_t STROKE_SETTLE_MS = 2000;         // range unchanged (within 1
 constexpr uint32_t STROKE_TIMEOUT_MS = 20000;       // no stroke after this long -> Panic
 
 // --- Run calibration (GUI_calibrate while Armed) -----------------------------------
-// The shock was just installed, so the yoke starts near the bottom:
-//   1. motor stopped: the bottom force (settle, then average);
-//   2. a little over one cycle at CALIBRATION_CENTIHZ: the stroke, from where
+// Measures the stroke and the shock's static force (preload and gas spring). The shock
+// was just installed, so the yoke starts near the bottom:
+//   1. a little over one cycle at CALIBRATION_CENTIHZ: the stroke, from where
 //      the yoke turns back at the top and at the bottom;
-//   3. on the way up, past CALIBRATION_SLOW_PERMILLE: down to CALIBRATION_TOP_CENTIHZ;
-//   4. the top force: averaged while the yoke goes through the top
-//      (CALIBRATION_TOP_WINDOW_PERMILLE), then the motor stops.
-constexpr uint32_t CALIBRATION_SETTLE_MS = 500;      // motor stopped, before the bottom force
-constexpr uint32_t CALIBRATION_REST_SAMPLES = 500;   // bottom force averaged over ~1 s
+//   2. the motor slows to CALIBRATION_FIT_CENTIHZ, and the drive has to report it;
+//   3. one slow cycle: the static force line (see StaticForceFit), then the motor stops.
+// The GUI gets that line as the static force at the bottom and at the top of the stroke.
 constexpr uint16_t CALIBRATION_CENTIHZ = 200;        // TUNE: 2 Hz while finding the stroke
-constexpr uint16_t CALIBRATION_TOP_CENTIHZ = 100;    // TUNE: 1 Hz through the top
-constexpr int32_t CALIBRATION_SLOW_PERMILLE = 800;   // in 0.1 % of the stroke towards the top
-// TUNE: the top force is averaged within this distance of the top (0.1 % of
+constexpr uint16_t CALIBRATION_FIT_CENTIHZ = 100;    // TUNE: 1 Hz for the static force cycle
+// TUNE: the dead-centre force is averaged within this distance of each end (0.1 % of
 // the stroke). Wider = more samples (less noise) but further from the end.
-constexpr int32_t CALIBRATION_TOP_WINDOW_PERMILLE = 20;
+constexpr int32_t CALIBRATION_END_WINDOW_PERMILLE = 20;
 // A turn back at an end counts once the position has come back by this much,
 // so noise can't make one (~0.5 mm on the LVIT).
 constexpr int32_t STROKE_TURN_HYSTERESIS_COUNTS = STROKE_MIN_RANGE_COUNTS / 2;
-constexpr uint32_t CALIBRATION_TIMEOUT_MS = 60000;   // TUNE: whole motion, from the start to the top force
+constexpr uint32_t CALIBRATION_TIMEOUT_MS = 90000;   // TUNE: whole motion, from the start to the static force
 
 // --- Run --------------------------------------------------------------------------
 // Cycle counting thresholds, in % of the stroke: a cycle is the position going

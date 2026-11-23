@@ -89,10 +89,9 @@ private:
         BottomOut,  // every step done, no more points: parking the yoke at the bottom
     };
     enum class CalibrationPhase : uint8_t {
-        BottomForce, // motor stopped (yoke near the bottom): average the force
-        FindStroke,  // a little over one cycle at CALIBRATION_CENTIHZ: where the yoke turns back
-        ApproachTop, // on the way up: slow down to CALIBRATION_TOP_CENTIHZ before the top
-        TopForce,    // average the force through the top
+        FindStroke, // a little over one cycle at CALIBRATION_CENTIHZ: where the yoke turns back
+        SlowDown,   // CALIBRATION_FIT_CENTIHZ sent, waiting for the drive to report it
+        Fit,        // one slow cycle: the static force line
     };
     enum class TarPhase : uint8_t {
         EmptyLoad,  // motor stopped: average the force with nothing on the bench (TAR only)
@@ -207,15 +206,15 @@ private:
     int32_t strokeMax_ = 0;
     bool emptyLoadKnown_ = false;
     int32_t emptyLoad_ = 0;      // TAR: force with nothing on the bench
-    int32_t bottomForce_ = 0;    // calibration: at rest near the bottom, shock mounted
-    int32_t topForce_ = 0;       // calibration: through the top at slow speed
+    int32_t bottomForce_ = 0;    // calibration: static force (shock mounted) at the bottom of the stroke
+    int32_t topForce_ = 0;       // calibration: static force at the top (a line fit, see StaticForceFit)
     int32_t forceMin_ = 0;       // failsafe window, raw counts (GUI_set_failsafe)
     int32_t forceMax_ = 0;
 
     // --- Phase bookkeeping (Calibration, Operating, Tar)
     uint32_t phaseStartMs_ = 0;
     uint32_t lastQueryMs_ = 0;   // last running-frequency query
-    RestForce restForce_;        // TAR empty load, calibration bottom force
+    RestForce restForce_;        // TAR empty load
     StrokeFinder strokeFinder_;  // TAR: stroke from a settled range
     BottomOutPhase bottomOutPhase_ = BottomOutPhase::SlowDown;
     EndApproach approach_;       // bottom out stop point, calibration slow-down point
@@ -238,10 +237,10 @@ private:
     CycleCounter cycleCounter_;
 
     // --- Calibration
-    CalibrationPhase calibrationPhase_ = CalibrationPhase::BottomForce;
+    CalibrationPhase calibrationPhase_ = CalibrationPhase::FindStroke;
     uint32_t calibrationMotionStartMs_ = 0;
     TurnStrokeFinder turnFinder_;
-    EndForceAverage topForceAverage_;
+    StaticForceFit staticFit_;
 
     // --- Tar
     TarPhase tarPhase_ = TarPhase::EmptyLoad;

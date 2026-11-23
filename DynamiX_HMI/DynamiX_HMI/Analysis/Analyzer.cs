@@ -20,14 +20,14 @@ namespace DynamiX_HMI.Analysis
     /// <summary>
     /// What the ESP32 measured before a run (its calibration cycle, and the last TAR), in mm and N.
     /// The bottom of the stroke is the reference for the position, and the line between the bottom force
-    /// and the top force is the static force (preload plus gas spring) that is removed from the graphs.
+    /// and the top force is the static force line (preload plus gas spring) that is removed from the graphs.
     /// </summary>
     public class RunCalibration
     {
         public double BottomMm;      // position at the bottom end of the stroke
         public double TopMm;         // position at the top end
-        public double BottomForceN;  // force at rest at the bottom, shock mounted
-        public double TopForceN;     // force through the top, slow speed
+        public double BottomForceN;  // static force (preload) at the bottom: the ESP32 fits a line through a slow cycle
+        public double TopForceN;     // the same line at the top (preload plus gas spring)
         public double EmptyForceN;   // TAR: force with nothing mounted (0 if there was no TAR)
 
         public RunCalibration Clone()

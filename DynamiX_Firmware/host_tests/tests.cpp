@@ -263,20 +263,76 @@ TEST(turn_stroke_finder) {
     CHECK(!small.found());
 }
 
-TEST(end_force_average_is_symmetric_around_the_top) {
-    // force = static + damping (sign of the speed): the damping cancels around the top
-    EndForceAverage a;
-    a.start(100000, 700000, true, 20);
+// One slow cycle of a shock: static force line + damping (follows the speed, different on the two
+// branches) + a bump at each end that the middle of the stroke doesn't have.
+static bool runFit(StaticForceFit& fit, double startTurns, double staticBottom, double slopePerCount, double compDamping,
+                   double rebDamping, double endBump, int* samples = nullptr) {
     bool done = false;
     int i = 0;
-    for (; i < 4000 && !done; i++) {
-        const double turns = 0.75 + i / 2000.0; // from mid-stroke, through the top (1.0)
-        const int32_t damping = (int32_t)(30000 * std::sin(turns * 2 * 3.14159265358979));
-        done = a.update(crank(turns), 50000 + damping);
+    for (; i < 20000 && !done; i++) {
+        const double turns = startTurns + i / 2000.0; // 0 = top, 0.5 = bottom
+        const int32_t pos = crank(turns);
+        const double s = std::sin(turns * 2 * 3.14159265358979); // > 0: going down (rebound)
+        const double damping = s > 0 ? -rebDamping * s : -compDamping * s;
+        const double fromBottom = pos - 100000;
+        double f = staticBottom + slopePerCount * fromBottom + damping;
+        if (fromBottom < 15000 || fromBottom > 585000) f += endBump;
+        done = fit.update(pos, (int32_t)f + ((i * 7919) % 401) - 200);
+    }
+    if (samples) *samples = i;
+    return done;
+}
+
+TEST(static_force_fit_finds_the_line_through_the_middle) {
+    // static: 20000 at the bottom, rising 0.05 counts per position count (50000 at the top); the damping is
+    // different on compression and rebound, but it is symmetric about mid-stroke, so the mean cancels it
+    for (double start : {0.0, 0.2, 0.5, 0.8}) {
+        StaticForceFit fit;
+        fit.start(100000, 700000, false, 20, 10000);
+        int n = 0;
+        CHECK(runFit(fit, start, 20000, 0.05, 6000, 14000, 0, &n));
+        std::printf("    start %.1f turns: %d samples, bottom %ld, top %ld (slope %.4f)\n", start, n,
+                    (long)fit.bottomLine(), (long)fit.topLine(), fit.slope());
+        CHECK(std::abs(fit.bottomLine() - 20000) < 800); // what is left is the uneven damping, over the window
+        CHECK(std::abs(fit.topLine() - 50000) < 800);
+        CHECK(fit.endSamples() > 50 && fit.branchSamples() > 200);
+    }
+}
+
+TEST(static_force_fit_is_not_fooled_by_the_ends) {
+    // a flat middle (no slope at all) with a bump at both ends: the line through the middle stays flat and sits
+    // at the level of the ends' mean, instead of the line between the two end values
+    StaticForceFit fit;
+    fit.start(100000, 700000, false, 20, 10000);
+    CHECK(runFit(fit, 0.3, 30000, 0.0, 6000, 14000, 8000));
+    CHECK(std::abs(fit.slope()) < 0.002);
+    CHECK(std::abs(fit.bottomLine() - fit.topLine()) < 1200);
+}
+
+TEST(static_force_fit_with_the_bottom_at_the_high_position) {
+    StaticForceFit fit;
+    fit.start(100000, 700000, true, 20, 10000);
+    // force rising towards the LOW positions (the bottom is high here): 40000 at 700000 (bottom), 10000 at 100000
+    bool done = false;
+    for (int i = 0; i < 20000 && !done; i++) {
+        const double turns = 0.3 + i / 2000.0;
+        const int32_t pos = crank(turns);
+        done = fit.update(pos, 40000 - (int32_t)(0.05 * (700000 - pos)));
     }
     CHECK(done);
-    CHECK(a.count() > 50);
-    CHECK(std::abs(a.value() - 50000) < 600);
+    CHECK(std::abs(fit.bottomLine() - 40000) < 400);
+    CHECK(std::abs(fit.topLine() - 10000) < 400);
+}
+
+TEST(static_force_fit_waits_for_both_ends_and_both_branches) {
+    StaticForceFit fit;
+    fit.start(100000, 700000, false, 20, 10000);
+    // only the way down, from the top to mid-stroke: not done
+    for (int i = 0; i < 400; i++) CHECK(!fit.update(crank(i / 2000.0), 30000));
+    // a stroke of zero length never completes
+    StaticForceFit none;
+    none.start(5, 5, false, 20, 10000);
+    CHECK(!none.update(5, 1000));
 }
 
 TEST(mlx90614_checksum_and_conversion) {
@@ -603,38 +659,38 @@ TEST(run_counts_the_requested_cycles) {
     if (g_failures) sim->printLog();
 }
 
-// ESP_calibration_data: [min][max][bottom force][top force]
-TEST(calibration_measures_the_stroke_and_both_forces) {
+// ESP_calibration_data: [min][max][static force at the bottom][static force at the top]
+TEST(calibration_measures_the_stroke_and_the_static_force) {
     auto sim = tarredSim(); // the TAR parks the yoke near the bottom
     sim->m.springForce = 40000;
     const double startTurns = sim->m.revolutions;
-    const int32_t restForce = sim->m.force(); // what the load cell reads where it stands
     sim->command(Cmd::GUI_run_request, {1});
     sim->command(Cmd::GUI_calibrate);
     CHECK(sim->sm.state() == State::Calibration);
-    sim->run(Config::CALIBRATION_SETTLE_MS);
-    CHECK(!sim->m.running); // nothing moves before the bottom force is in
     bool slowSpeedSeen = false;
-    bool topSpeedSeen = false;
+    bool fitSpeedSeen = false;
     CHECK(sim->runUntil([&] {
         slowSpeedSeen = slowSpeedSeen || sim->m.setHz == Config::CALIBRATION_CENTIHZ / 100.0;
-        topSpeedSeen = topSpeedSeen || sim->m.setHz == Config::CALIBRATION_TOP_CENTIHZ / 100.0;
+        fitSpeedSeen = fitSpeedSeen || sim->m.setHz == Config::CALIBRATION_FIT_CENTIHZ / 100.0;
         return sim->sm.state() != State::Calibration;
-    }, 60000));
+    }, 90000));
     CHECK(sim->sm.state() == State::Armed);
-    CHECK(slowSpeedSeen && topSpeedSeen);
+    CHECK(slowSpeedSeen && fitSpeedSeen);
     CHECK(sim->count(Cmd::ESP_emergency) == 0);
-    // a little over one cycle, then through the top
+    // the stroke at 2 Hz, then one slow cycle for the line
     const double turns = sim->m.revolutions - startTurns;
     std::printf("    calibration: %.2f turns\n", turns);
-    CHECK(turns > 1.4 && turns < 2.2);
+    CHECK(turns > 2.0 && turns < 4.5);
     const GuiEvent* cal = sim->last(Cmd::ESP_calibration_data);
     CHECK(cal != nullptr && cal->payload.size() == 12);
     if (cal) {
+        std::printf("    static force at the bottom %ld, at the top %ld\n", (long)readInt24BE(&cal->payload[6]),
+                    (long)readInt24BE(&cal->payload[9]));
         CHECK(std::abs(readInt24BE(&cal->payload[0]) - 100000) < 1500);
         CHECK(std::abs(readInt24BE(&cal->payload[3]) - 700000) < 1500);
-        CHECK(std::abs(readInt24BE(&cal->payload[6]) - restForce) < 400); // bottom force
-        CHECK(std::abs(readInt24BE(&cal->payload[9]) - 14000) < 1500);    // top: no spring, no damping
+        // the simulated spring: all of it at the bottom, none at the top (the damping cancels out)
+        CHECK(std::abs(readInt24BE(&cal->payload[6]) - (14000 + 40000)) < 1500);
+        CHECK(std::abs(readInt24BE(&cal->payload[9]) - 14000) < 1500);
     }
     CHECK(sim->count(Cmd::ESP_tar_data) == 0);
     if (g_failures) sim->printLog();
@@ -644,15 +700,17 @@ TEST(calibration_from_anywhere_in_the_stroke) {
     for (double start : {0.0, 0.2, 0.7}) {
         auto sim = tarredSim();
         sim->m.revolutions = std::floor(sim->m.revolutions) + start;
+        sim->run(100); // the yoke "stands" there (it jumped: the sensor filter has to settle)
         sim->command(Cmd::GUI_run_request, {1});
         sim->command(Cmd::GUI_calibrate);
-        CHECK(sim->runUntil([&] { return sim->sm.state() != State::Calibration; }, 60000));
+        CHECK(sim->runUntil([&] { return sim->sm.state() != State::Calibration; }, 90000));
         CHECK(sim->sm.state() == State::Armed);
         const GuiEvent* cal = sim->last(Cmd::ESP_calibration_data);
         CHECK(cal != nullptr);
         if (cal) {
             CHECK(std::abs(readInt24BE(&cal->payload[0]) - 100000) < 1500);
             CHECK(std::abs(readInt24BE(&cal->payload[3]) - 700000) < 1500);
+            std::printf("    start %.1f: stroke %ld to %ld\n", start, (long)readInt24BE(&cal->payload[0]), (long)readInt24BE(&cal->payload[3]));
         }
     }
 }

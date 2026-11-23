@@ -131,7 +131,7 @@ namespace DynamiX_HMI.Grapher
             groupBoxRunItem.Dock = DockStyle.Fill;
             groupBoxRunItem.Location = new Point(0, 0);
             groupBoxRunItem.Name = "groupBoxRunItem";
-            groupBoxRunItem.Size = new Size(257, 147);
+            groupBoxRunItem.Size = new Size(278, 155);
             groupBoxRunItem.TabIndex = 5;
             groupBoxRunItem.TabStop = false;
             groupBoxRunItem.Text = "261122_171635_Run_1";
@@ -189,7 +189,7 @@ namespace DynamiX_HMI.Grapher
             AutoScaleMode = AutoScaleMode.Font;
             Controls.Add(groupBoxRunItem);
             Name = "RunItem";
-            Size = new Size(257, 147);
+            Size = new Size(278, 155);
             groupBoxRunItem.ResumeLayout(false);
             menuRun.ResumeLayout(false);
             ResumeLayout(false);
