@@ -86,6 +86,10 @@ namespace DynamiX_HMI.Config
         [Category("5. Sensor calibration"), DisplayName("Position set"), Description("When and how the position calibration was last set."), ReadOnly(true)]
         public string PositionInfo { get; set; } = "default";
 
+        // ------------------------------------------------------------------ 6. Display
+        [Category("6. Display"), DisplayName("Shift graph colours"), Description("Each speed of a run is drawn with the hue of the run's colour moved down by this much more than the speed before it (0 to 255 steps around the colour wheel, 255 = a full turn). 0 = every speed has the run's colour. A speed whose colour was picked by hand keeps it.")]
+        public int GraphColourHueShift { get; set; } = 16;
+
         // ------------------------------------------------------------------ conversions (not saved)
 
         /// <summary>The settings in use. Loaded at start-up, changed by the Options page.</summary>
@@ -145,6 +149,7 @@ namespace DynamiX_HMI.Config
         public void Sanitize()
         {
             ScreenRefreshMs = Math.Clamp(ScreenRefreshMs, 50, 1000);
+            GraphColourHueShift = Math.Clamp(GraphColourHueShift, 0, 255);
             CycleHysteresisMm = Math.Max(0.01, Fix(CycleHysteresisMm, 2.0));
             FilterCutoffHz = Math.Max(0, Fix(FilterCutoffHz, 150));
             VelocityWindowMs = Math.Max(1, Fix(VelocityWindowMs, 8));

@@ -292,6 +292,7 @@ namespace DynamiX_HMI.Grapher
                 }
             }
             runPanel.RefreshTexts();
+            runPanel.AssignColours(); // the shift of the graph colours may have changed
             graphPanel.ApplySettings();
             RefreshGraphs();
         }

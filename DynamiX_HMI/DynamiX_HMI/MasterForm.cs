@@ -79,6 +79,7 @@ namespace DynamiX_HMI
             rightGridLayout.RowStyles[1].Height = 0;
             optionPanel1.SettingsChanged += OnSettingsChanged;
             mainSplitContainerRight.SplitterDistance = Math.Max(200, mainSplitContainerRight.Width - 340); // room for the run list
+            mainSplitContainerLeft.SplitterDistance = Math.Max(mainSplitContainerLeft.Panel1MinSize, 345); // room for the sequence table
 
             lastRunsFolder = AppSettings.Current.RunsFolder;
             graphController.LoadHistory();
@@ -413,9 +414,7 @@ namespace DynamiX_HMI
             }
             else
             {
-                // Speed: a number from 0 to 60 (Hz). Duration: a whole number of cycles, 1 to 255.
-                logger.SetMessage("ERROR: Bad configuration sequence (speed 0-" + DriveCommands.MaxHz
-                                  + " Hz, cycles 1-255), run not requested");
+                logger.SetMessage("ERROR: " + sequencePanel1.ErrorText + ". Run not requested");
                 HandleSerialCommand(new CommandPacket(CommandFlags.GUI_abort, "")); // back to Idle
                 return;
             }
@@ -459,7 +458,7 @@ namespace DynamiX_HMI
             if (!sequencePanel1.MakeSequence(out List<CommandPacket> sequence))
             {
                 // Don't start with a sequence the ESP can't run: tell it to drop the run
-                logger.SetMessage("ERROR: Bad configuration sequence, run not started");
+                logger.SetMessage("ERROR: " + sequencePanel1.ErrorText + ". Run not started");
                 serialController.SendGuiCommand(new CommandPacket(CommandFlags.GUI_abort));
                 return;
             }

@@ -1,4 +1,5 @@
 using DynamiX_HMI.Analysis;
+using DynamiX_HMI.Config;
 
 namespace DynamiX_HMI.Grapher
 {
@@ -9,8 +10,13 @@ namespace DynamiX_HMI.Grapher
         public StepInfo Info;
         public StepResult? Result;      // after the run's data is analysed
         public bool Visible = true;
-        public Color? Custom;           // null = same colour as its run
-        public Color Shown => Custom ?? Run.Shown;
+        public Color? Custom;           // null = derived from the run's colour (see Shown)
+
+        /// <summary>
+        /// The colour in the graphs: the one picked by hand, else the run's colour with its hue moved down by
+        /// GraphColourHueShift steps (of 255) for each speed before this one: speed 0 has the run's colour.
+        /// </summary>
+        public Color Shown => Custom ?? ColorMath.ShiftHue255(Run.Shown, -AppSettings.Current.GraphColourHueShift * (double)Info.Index);
 
         public StepEntry(RunEntry run, StepInfo info)
         {

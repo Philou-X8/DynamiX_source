@@ -227,6 +227,10 @@ namespace DynamiX_HMI.Grapher
             if (node.Tag is RunEntry r)
             {
                 r.Custom = colour;
+                foreach (StepEntry step in r.Steps) // the speeds follow the new colour again
+                {
+                    step.Custom = null;
+                }
             }
             else if (node.Tag is StepEntry s)
             {
