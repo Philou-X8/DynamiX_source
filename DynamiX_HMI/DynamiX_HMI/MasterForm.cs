@@ -47,7 +47,6 @@ namespace DynamiX_HMI
         // Calibration stroke may differ from the TAR stroke by this fraction before we warn
         private const float StrokeMismatchTolerance = 0.05f;
         private float temperatureData;
-        private string lastRunsFolder = "";
 
         public MasterForm()
         {
@@ -81,8 +80,6 @@ namespace DynamiX_HMI
             mainSplitContainerRight.SplitterDistance = Math.Max(200, mainSplitContainerRight.Width - 340); // room for the run list
             mainSplitContainerLeft.SplitterDistance = Math.Max(mainSplitContainerLeft.Panel1MinSize, 345); // room for the sequence table
 
-            lastRunsFolder = AppSettings.Current.RunsFolder;
-            graphController.LoadHistory();
 
 
             heartbeatTimer = new System.Windows.Forms.Timer();
@@ -253,12 +250,6 @@ namespace DynamiX_HMI
         private void OnSettingsChanged()
         {
             graphController.SettingsChanged();
-            string runs = AppSettings.Current.RunsFolder;
-            if (runs != lastRunsFolder) // another data folder: another list of runs
-            {
-                lastRunsFolder = runs;
-                graphController.LoadHistory();
-            }
         }
 
         private void buttonTar_Click(object sender, EventArgs e)

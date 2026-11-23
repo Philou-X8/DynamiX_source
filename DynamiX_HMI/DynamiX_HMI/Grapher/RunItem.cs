@@ -66,7 +66,7 @@ namespace DynamiX_HMI.Grapher
             {
                 return;
             }
-            bool expanded = rootNode?.IsExpanded ?? true;
+            bool expanded = rootNode?.IsExpanded ?? false; // a new run starts collapsed
             UnitSystem u = AppSettings.Current.Units;
 
             suppress = true;
@@ -81,7 +81,7 @@ namespace DynamiX_HMI.Grapher
                 });
             }
             treeSpeeds.Nodes.Add(rootNode);
-            if (expanded || entry.InProgress)
+            if (expanded)
             {
                 rootNode.Expand();
             }

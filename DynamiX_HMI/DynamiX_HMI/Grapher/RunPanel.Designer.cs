@@ -34,7 +34,6 @@ namespace DynamiX_HMI.Grapher
             buttons = new FlowLayoutPanel();
             buttonOpen = new Button();
             buttonExport = new Button();
-            buttonRefresh = new Button();
             groupBoxRuns = new GroupBox();
             flowRuns = new FlowLayoutPanel();
             toolTip = new ToolTip(components);
@@ -64,7 +63,6 @@ namespace DynamiX_HMI.Grapher
             buttons.AutoSize = true;
             buttons.Controls.Add(buttonOpen);
             buttons.Controls.Add(buttonExport);
-            buttons.Controls.Add(buttonRefresh);
             buttons.Dock = DockStyle.Fill;
             buttons.Location = new Point(0, 0);
             buttons.Margin = new Padding(0);
@@ -96,19 +94,6 @@ namespace DynamiX_HMI.Grapher
             toolTip.SetToolTip(buttonExport, "One summary file with every run that is shown (the Show Speeds box ticked), one block per run");
             buttonExport.UseVisualStyleBackColor = true;
             buttonExport.Click += buttonExport_Click;
-            //
-            // buttonRefresh
-            //
-            buttonRefresh.AutoSize = true;
-            buttonRefresh.Location = new Point(206, 2);
-            buttonRefresh.Margin = new Padding(2);
-            buttonRefresh.Name = "buttonRefresh";
-            buttonRefresh.Size = new Size(60, 30);
-            buttonRefresh.TabIndex = 2;
-            buttonRefresh.Text = "Refresh";
-            toolTip.SetToolTip(buttonRefresh, "Read the runs folder again");
-            buttonRefresh.UseVisualStyleBackColor = true;
-            buttonRefresh.Click += buttonRefresh_Click;
             //
             // groupBoxRuns
             //
@@ -154,7 +139,6 @@ namespace DynamiX_HMI.Grapher
         private FlowLayoutPanel buttons;
         private Button buttonOpen;
         private Button buttonExport;
-        private Button buttonRefresh;
         private GroupBox groupBoxRuns;
         private FlowLayoutPanel flowRuns;
         private ToolTip toolTip;

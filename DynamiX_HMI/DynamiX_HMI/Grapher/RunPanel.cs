@@ -26,7 +26,6 @@ namespace DynamiX_HMI.Grapher
         /// <summary> The Open button, with the chosen files. </summary>
         public Action<string[]>? OpenRequested;
         /// <summary> The Refresh button: read the runs folder again. </summary>
-        public Action? RefreshRequested;
         /// <summary> Delete a saved run's file (already confirmed). </summary>
         public Action<RunEntry>? DeleteRequested;
 
@@ -49,38 +48,7 @@ namespace DynamiX_HMI.Grapher
             ExportRequested?.Invoke();
         }
 
-        private void buttonRefresh_Click(object? sender, EventArgs e)
-        {
-            RefreshRequested?.Invoke();
-        }
-
         // ------------------------------------------------------------------ content
-
-        /// <summary> Replaces the list (runs read from the folder). Keeps the ticks of runs still present. </summary>
-        public void SetEntries(IEnumerable<RunEntry> newEntries)
-        {
-            var wasShown = new HashSet<string>(CheckedRuns().Where(r => r.Path.Length > 0).Select(r => r.Path));
-            var inProgress = entries.Where(r => r.InProgress).ToList();
-
-            flowRuns.SuspendLayout();
-            foreach (RunItem item in items.Values)
-            {
-                flowRuns.Controls.Remove(item);
-                item.Dispose();
-            }
-            items.Clear();
-            entries.Clear();
-            foreach (RunEntry r in inProgress.Concat(newEntries))
-            {
-                if (inProgress.Contains(r) || !entries.Any(e => e.Path == r.Path))
-                {
-                    AddItem(r, wasShown.Contains(r.Path) || r.InProgress, false);
-                }
-            }
-            flowRuns.ResumeLayout(true);
-            AssignColours();
-            QueueSelectionChanged();
-        }
 
         /// <summary> A new run at the top of the list, shown right away. </summary>
         public void AddEntry(RunEntry entry)
@@ -199,27 +167,30 @@ namespace DynamiX_HMI.Grapher
             });
         }
 
-        /// <summary> Chosen colours first; the other shown runs take palette colours not already used, in list order. </summary>
+        /// <summary>
+        /// Every run keeps its colour: the one chosen, else the palette colour it was given when it joined the list
+        /// (a free one, in list order). Hiding or showing a run changes nothing for the others.
+        /// </summary>
         public void AssignColours()
         {
             var shown = CheckedRuns().ToList();
-            var used = new HashSet<int>(shown.Where(r => r.Custom.HasValue).Select(r => r.Custom!.Value.ToArgb()));
-            int k = 0;
-            foreach (RunEntry r in shown)
+            var used = new Dictionary<int, int>(); // colour -> runs using it
+            void Use(Color c) => used[c.ToArgb()] = used.TryGetValue(c.ToArgb(), out int n) ? n + 1 : 1;
+            foreach (RunEntry r in entries)
             {
-                if (r.Custom.HasValue)
+                if (r.Custom.HasValue) Use(r.Custom.Value);
+                else if (r.Auto.HasValue) Use(r.Auto.Value);
+            }
+            foreach (RunEntry r in entries)
+            {
+                if (!r.Custom.HasValue && !r.Auto.HasValue)
                 {
-                    r.Shown = r.Custom.Value;
-                    continue;
+                    // the least used palette colour, the first one of those
+                    Color pick = PlotControl.Palette.OrderBy(c => used.TryGetValue(c.ToArgb(), out int n) ? n : 0).First();
+                    r.Auto = pick;
+                    Use(pick);
                 }
-                Color c = PlotControl.Palette[k % PlotControl.Palette.Length];
-                for (int tries = 0; tries < PlotControl.Palette.Length && used.Contains(c.ToArgb()); tries++)
-                {
-                    c = PlotControl.Palette[++k % PlotControl.Palette.Length];
-                }
-                r.Shown = c;
-                used.Add(c.ToArgb());
-                k++;
+                r.Shown = r.Custom ?? r.Auto!.Value;
             }
             var shownSet = new HashSet<RunEntry>(shown);
             foreach (var pair in items)

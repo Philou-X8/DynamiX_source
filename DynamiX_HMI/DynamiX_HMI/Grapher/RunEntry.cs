@@ -39,7 +39,8 @@ namespace DynamiX_HMI.Grapher
         public List<StepResult> Results = new List<StepResult>();
         public List<StepEntry> Steps = new List<StepEntry>();
         public Color? Custom;
-        public Color Shown;             // colour used in the graphs this time
+        public Color? Auto;             // palette colour given when the run joined the list: kept, shown or hidden
+        public Color Shown;             // colour used in the graphs
 
         public RunEntry(TestRun run)
         {

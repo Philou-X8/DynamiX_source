@@ -45,7 +45,6 @@ namespace DynamiX_HMI.Grapher
             runPanel.ExportRequested = () => ExportSummary(runPanel.CheckedRuns().ToList());
             runPanel.ExportRunRequested = run => ExportSummary(new List<RunEntry> { run });
             runPanel.SavePointsRequested = SavePoints;
-            runPanel.RefreshRequested = LoadHistory;
             runPanel.OpenRequested = OpenFiles;
             runPanel.DeleteRequested = DeleteRun;
         }
@@ -215,7 +214,7 @@ namespace DynamiX_HMI.Grapher
             {
                 try
                 {
-                    string path = TestRun.MakeFileName(AppSettings.Current.RunsFolder, entry.Run.Date);
+                    string path = TestRun.MakeFileName(AppSettings.Current.AutosaveFolder, entry.Run.Date);
                     entry.Run.Save(path);
                     entry.Path = path;
                     say("Run saved: " + path);
@@ -298,32 +297,6 @@ namespace DynamiX_HMI.Grapher
         }
 
         // ------------------------------------------------------------------ run list and files
-
-        /// <summary> Lists the runs in the runs folder (newest first), reading only their headers. </summary>
-        public void LoadHistory()
-        {
-            var list = new List<RunEntry>();
-            string folder = AppSettings.Current.RunsFolder;
-            try
-            {
-                if (Directory.Exists(folder))
-                {
-                    foreach (string path in Directory.GetFiles(folder, "*.csv").OrderByDescending(p => p))
-                    {
-                        RunEntry? entry = ReadHeader(path);
-                        if (entry != null)
-                        {
-                            list.Add(entry);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                say("Could not read the runs folder: " + ex.Message);
-            }
-            runPanel.SetEntries(list);
-        }
 
         private RunEntry? ReadHeader(string path)
         {
