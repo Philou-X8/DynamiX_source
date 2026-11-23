@@ -31,104 +31,91 @@ namespace DynamiX_HMI.Grapher
         {
             components = new System.ComponentModel.Container();
             layout = new TableLayoutPanel();
-            buttons = new FlowLayoutPanel();
             buttonOpen = new Button();
-            buttonExport = new Button();
             groupBoxRuns = new GroupBox();
             flowRuns = new FlowLayoutPanel();
+            buttonExport = new Button();
             toolTip = new ToolTip(components);
             layout.SuspendLayout();
-            buttons.SuspendLayout();
             groupBoxRuns.SuspendLayout();
             SuspendLayout();
-            //
+            // 
             // layout
-            //
-            layout.ColumnCount = 1;
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.Controls.Add(buttons, 0, 0);
-            layout.Controls.Add(groupBoxRuns, 0, 1);
+            // 
+            layout.ColumnCount = 2;
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            layout.Controls.Add(flowRuns, 0, 1);
+            layout.Controls.Add(buttonOpen, 0, 0);
+            layout.Controls.Add(buttonExport, 1, 0);
             layout.Dock = DockStyle.Fill;
-            layout.Location = new Point(0, 0);
+            layout.Location = new Point(4, 20);
             layout.Margin = new Padding(0);
             layout.Name = "layout";
             layout.RowCount = 2;
-            layout.RowStyles.Add(new RowStyle());
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            layout.Size = new Size(280, 400);
+            layout.Size = new Size(276, 383);
             layout.TabIndex = 0;
-            //
-            // buttons
-            //
-            buttons.AutoSize = true;
-            buttons.Controls.Add(buttonOpen);
-            buttons.Controls.Add(buttonExport);
-            buttons.Dock = DockStyle.Fill;
-            buttons.Location = new Point(0, 0);
-            buttons.Margin = new Padding(0);
-            buttons.Name = "buttons";
-            buttons.Size = new Size(280, 34);
-            buttons.TabIndex = 0;
-            //
+            // 
             // buttonOpen
-            //
+            // 
             buttonOpen.AutoSize = true;
-            buttonOpen.Location = new Point(2, 2);
-            buttonOpen.Margin = new Padding(2);
+            buttonOpen.Dock = DockStyle.Fill;
+            buttonOpen.Location = new Point(3, 3);
             buttonOpen.Name = "buttonOpen";
-            buttonOpen.Size = new Size(72, 30);
+            buttonOpen.Size = new Size(132, 34);
             buttonOpen.TabIndex = 0;
-            buttonOpen.Text = "Open...";
+            buttonOpen.Text = "Import Run";
             buttonOpen.UseVisualStyleBackColor = true;
             buttonOpen.Click += buttonOpen_Click;
-            //
-            // buttonExport
-            //
-            buttonExport.AutoSize = true;
-            buttonExport.Location = new Point(78, 2);
-            buttonExport.Margin = new Padding(2);
-            buttonExport.Name = "buttonExport";
-            buttonExport.Size = new Size(124, 30);
-            buttonExport.TabIndex = 1;
-            buttonExport.Text = "Export all summary...";
-            toolTip.SetToolTip(buttonExport, "One summary file with every run that is shown (the Show Speeds box ticked), one block per run");
-            buttonExport.UseVisualStyleBackColor = true;
-            buttonExport.Click += buttonExport_Click;
-            //
+            // 
             // groupBoxRuns
-            //
-            groupBoxRuns.Controls.Add(flowRuns);
+            // 
+            groupBoxRuns.Controls.Add(layout);
             groupBoxRuns.Dock = DockStyle.Fill;
-            groupBoxRuns.Location = new Point(3, 37);
+            groupBoxRuns.Location = new Point(0, 0);
             groupBoxRuns.Name = "groupBoxRuns";
             groupBoxRuns.Padding = new Padding(4);
-            groupBoxRuns.Size = new Size(274, 360);
+            groupBoxRuns.Size = new Size(284, 407);
             groupBoxRuns.TabIndex = 1;
             groupBoxRuns.TabStop = false;
             groupBoxRuns.Text = "Runs";
-            //
+            // 
             // flowRuns
-            //
+            // 
             flowRuns.AutoScroll = true;
+            layout.SetColumnSpan(flowRuns, 2);
             flowRuns.Dock = DockStyle.Fill;
             flowRuns.FlowDirection = FlowDirection.TopDown;
-            flowRuns.Location = new Point(4, 20);
+            flowRuns.Location = new Point(3, 43);
             flowRuns.Name = "flowRuns";
-            flowRuns.Size = new Size(266, 336);
+            flowRuns.Size = new Size(270, 337);
             flowRuns.TabIndex = 0;
             flowRuns.WrapContents = false;
-            //
+            // 
+            // buttonExport
+            // 
+            buttonExport.AutoSize = true;
+            buttonExport.Dock = DockStyle.Fill;
+            buttonExport.Location = new Point(141, 3);
+            buttonExport.Name = "buttonExport";
+            buttonExport.Size = new Size(132, 34);
+            buttonExport.TabIndex = 1;
+            buttonExport.Text = "Export Selected";
+            toolTip.SetToolTip(buttonExport, "One summary file with every run that is shown (the Show Speeds box ticked), one block per run");
+            buttonExport.UseVisualStyleBackColor = true;
+            buttonExport.Click += buttonExport_Click;
+            // 
             // RunPanel
-            //
+            // 
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            Controls.Add(layout);
+            Controls.Add(groupBoxRuns);
             Name = "RunPanel";
-            Size = new Size(280, 400);
+            Size = new Size(284, 407);
             layout.ResumeLayout(false);
             layout.PerformLayout();
-            buttons.ResumeLayout(false);
-            buttons.PerformLayout();
             groupBoxRuns.ResumeLayout(false);
             ResumeLayout(false);
         }
@@ -136,7 +123,6 @@ namespace DynamiX_HMI.Grapher
         #endregion
 
         private TableLayoutPanel layout;
-        private FlowLayoutPanel buttons;
         private Button buttonOpen;
         private Button buttonExport;
         private GroupBox groupBoxRuns;

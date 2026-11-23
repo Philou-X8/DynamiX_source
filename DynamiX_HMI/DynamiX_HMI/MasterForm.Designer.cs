@@ -62,14 +62,16 @@
             labelTemp = new Label();
             labelForceMax = new Label();
             rightGridLayout = new TableLayoutPanel();
-            groupBox3 = new GroupBox();
-            buttonSave = new Button();
-            buttonLoad = new Button();
-            runPanel1 = new DynamiX_HMI.Grapher.RunPanel();
             tableLayoutPanel4 = new TableLayoutPanel();
             labelStatus = new Label();
             buttonOptions = new Button();
             optionPanel1 = new DynamiX_HMI.Menus.OptionPanel();
+            runPanel1 = new DynamiX_HMI.Grapher.RunPanel();
+            groupBoxProject = new GroupBox();
+            tableLayoutPanelProject = new TableLayoutPanel();
+            buttonProjectNew = new Button();
+            textBoxProject = new TextBox();
+            buttonProjectLoad = new Button();
             leftGridLayout.SuspendLayout();
             groupBoxMachine.SuspendLayout();
             tableLayoutPanel1.SuspendLayout();
@@ -86,8 +88,9 @@
             groupBoxLiveData.SuspendLayout();
             tableLayoutPanel3.SuspendLayout();
             rightGridLayout.SuspendLayout();
-            groupBox3.SuspendLayout();
             tableLayoutPanel4.SuspendLayout();
+            groupBoxProject.SuspendLayout();
+            tableLayoutPanelProject.SuspendLayout();
             SuspendLayout();
             // 
             // graphPanel1
@@ -540,58 +543,20 @@
             rightGridLayout.CellBorderStyle = TableLayoutPanelCellBorderStyle.Single;
             rightGridLayout.ColumnCount = 1;
             rightGridLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            rightGridLayout.Controls.Add(groupBox3, 0, 3);
-            rightGridLayout.Controls.Add(runPanel1, 0, 2);
             rightGridLayout.Controls.Add(tableLayoutPanel4, 0, 0);
             rightGridLayout.Controls.Add(optionPanel1, 0, 1);
+            rightGridLayout.Controls.Add(runPanel1, 0, 3);
+            rightGridLayout.Controls.Add(groupBoxProject, 0, 2);
             rightGridLayout.Dock = DockStyle.Fill;
             rightGridLayout.Location = new Point(0, 0);
             rightGridLayout.Name = "rightGridLayout";
             rightGridLayout.RowCount = 4;
             rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
-            rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 240F));
+            rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 180F));
+            rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100F));
             rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
             rightGridLayout.Size = new Size(253, 657);
             rightGridLayout.TabIndex = 0;
-            // 
-            // groupBox3
-            // 
-            groupBox3.Controls.Add(buttonSave);
-            groupBox3.Controls.Add(buttonLoad);
-            groupBox3.Dock = DockStyle.Fill;
-            groupBox3.Location = new Point(4, 599);
-            groupBox3.Name = "groupBox3";
-            groupBox3.Size = new Size(245, 54);
-            groupBox3.TabIndex = 0;
-            groupBox3.TabStop = false;
-            groupBox3.Text = "groupBox3";
-            // 
-            // buttonSave
-            // 
-            buttonSave.Location = new Point(125, 22);
-            buttonSave.Name = "buttonSave";
-            buttonSave.Size = new Size(75, 23);
-            buttonSave.TabIndex = 1;
-            buttonSave.Text = "Save";
-            buttonSave.UseVisualStyleBackColor = true;
-            // 
-            // buttonLoad
-            // 
-            buttonLoad.Location = new Point(15, 22);
-            buttonLoad.Name = "buttonLoad";
-            buttonLoad.Size = new Size(75, 23);
-            buttonLoad.TabIndex = 0;
-            buttonLoad.Text = "Load";
-            buttonLoad.UseVisualStyleBackColor = true;
-            // 
-            // runPanel1
-            // 
-            runPanel1.Dock = DockStyle.Fill;
-            runPanel1.Location = new Point(4, 286);
-            runPanel1.Name = "runPanel1";
-            runPanel1.Size = new Size(245, 306);
-            runPanel1.TabIndex = 2;
             // 
             // tableLayoutPanel4
             // 
@@ -636,8 +601,73 @@
             optionPanel1.Dock = DockStyle.Fill;
             optionPanel1.Location = new Point(4, 45);
             optionPanel1.Name = "optionPanel1";
-            optionPanel1.Size = new Size(245, 234);
+            optionPanel1.Size = new Size(245, 174);
             optionPanel1.TabIndex = 5;
+            // 
+            // runPanel1
+            // 
+            runPanel1.Dock = DockStyle.Fill;
+            runPanel1.Location = new Point(4, 327);
+            runPanel1.Name = "runPanel1";
+            runPanel1.Size = new Size(245, 326);
+            runPanel1.TabIndex = 2;
+            // 
+            // groupBoxProject
+            // 
+            groupBoxProject.Controls.Add(tableLayoutPanelProject);
+            groupBoxProject.Dock = DockStyle.Fill;
+            groupBoxProject.Location = new Point(4, 226);
+            groupBoxProject.Name = "groupBoxProject";
+            groupBoxProject.Size = new Size(245, 94);
+            groupBoxProject.TabIndex = 0;
+            groupBoxProject.TabStop = false;
+            groupBoxProject.Text = "Project Manager";
+            // 
+            // tableLayoutPanelProject
+            // 
+            tableLayoutPanelProject.ColumnCount = 2;
+            tableLayoutPanelProject.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tableLayoutPanelProject.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tableLayoutPanelProject.Controls.Add(buttonProjectNew, 0, 1);
+            tableLayoutPanelProject.Controls.Add(textBoxProject, 0, 0);
+            tableLayoutPanelProject.Controls.Add(buttonProjectLoad, 1, 1);
+            tableLayoutPanelProject.Dock = DockStyle.Fill;
+            tableLayoutPanelProject.Location = new Point(3, 19);
+            tableLayoutPanelProject.Name = "tableLayoutPanelProject";
+            tableLayoutPanelProject.RowCount = 2;
+            tableLayoutPanelProject.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            tableLayoutPanelProject.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            tableLayoutPanelProject.Size = new Size(239, 72);
+            tableLayoutPanelProject.TabIndex = 5;
+            // 
+            // buttonProjectNew
+            // 
+            buttonProjectNew.Dock = DockStyle.Fill;
+            buttonProjectNew.Location = new Point(3, 39);
+            buttonProjectNew.Name = "buttonProjectNew";
+            buttonProjectNew.Size = new Size(113, 30);
+            buttonProjectNew.TabIndex = 3;
+            buttonProjectNew.Text = "New Project";
+            buttonProjectNew.UseVisualStyleBackColor = true;
+            // 
+            // textBoxProject
+            // 
+            tableLayoutPanelProject.SetColumnSpan(textBoxProject, 2);
+            textBoxProject.Dock = DockStyle.Fill;
+            textBoxProject.Location = new Point(3, 3);
+            textBoxProject.Name = "textBoxProject";
+            textBoxProject.Size = new Size(233, 23);
+            textBoxProject.TabIndex = 1;
+            // 
+            // buttonProjectLoad
+            // 
+            buttonProjectLoad.Dock = DockStyle.Fill;
+            buttonProjectLoad.Location = new Point(122, 39);
+            buttonProjectLoad.Name = "buttonProjectLoad";
+            buttonProjectLoad.Size = new Size(114, 30);
+            buttonProjectLoad.TabIndex = 4;
+            buttonProjectLoad.Text = "Load Project";
+            buttonProjectLoad.UseVisualStyleBackColor = true;
             // 
             // MasterForm
             // 
@@ -666,9 +696,11 @@
             tableLayoutPanel3.ResumeLayout(false);
             tableLayoutPanel3.PerformLayout();
             rightGridLayout.ResumeLayout(false);
-            groupBox3.ResumeLayout(false);
             tableLayoutPanel4.ResumeLayout(false);
             tableLayoutPanel4.PerformLayout();
+            groupBoxProject.ResumeLayout(false);
+            tableLayoutPanelProject.ResumeLayout(false);
+            tableLayoutPanelProject.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -687,12 +719,10 @@
         private Grapher.GraphPanel graphPanel1;
         private TableLayoutPanel centerGridLayout;
         private TableLayoutPanel rightGridLayout;
-        private GroupBox groupBox3;
+        private GroupBox groupBoxProject;
         private Label labelStatus;
         private Sequencer.SequencePanel sequencePanel1;
         private Grapher.RunPanel runPanel1;
-        private Button buttonSave;
-        private Button buttonLoad;
         private GroupBox groupBoxLiveData;
         private Label labelPosMinVal;
         private Label labelPosMaxVal;
@@ -715,5 +745,9 @@
         private Label labelForceMinVal;
         private Label labelForceMin;
         private Label labelForceMax;
+        private TextBox textBoxProject;
+        private Button buttonProjectLoad;
+        private Button buttonProjectNew;
+        private TableLayoutPanel tableLayoutPanelProject;
     }
 }
