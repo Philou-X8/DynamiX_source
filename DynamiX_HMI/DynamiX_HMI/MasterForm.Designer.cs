@@ -621,7 +621,7 @@
             groupBoxProject.Size = new Size(245, 94);
             groupBoxProject.TabIndex = 0;
             groupBoxProject.TabStop = false;
-            groupBoxProject.Text = "Project Manager";
+            groupBoxProject.Text = "Active Project";
             // 
             // tableLayoutPanelProject
             // 

@@ -44,6 +44,8 @@ namespace DynamiX_HMI.Sequencer
             buttonAdd = new Button();
             buttonLoad = new Button();
             buttonSave = new Button();
+            labelRunName = new Label();
+            textBoxRunName = new TextBox();
             ((System.ComponentModel.ISupportInitialize)gridSequence).BeginInit();
             tableLayoutPanel1.SuspendLayout();
             SuspendLayout();
@@ -74,7 +76,7 @@ namespace DynamiX_HMI.Sequencer
             gridSequence.DefaultCellStyle = dataGridViewCellStyle2;
             gridSequence.Dock = DockStyle.Fill;
             gridSequence.EditMode = DataGridViewEditMode.EditOnEnter;
-            gridSequence.Location = new Point(3, 3);
+            gridSequence.Location = new Point(3, 43);
             gridSequence.MultiSelect = false;
             gridSequence.Name = "gridSequence";
             dataGridViewCellStyle3.Alignment = DataGridViewContentAlignment.MiddleLeft;
@@ -87,7 +89,7 @@ namespace DynamiX_HMI.Sequencer
             gridSequence.RowHeadersDefaultCellStyle = dataGridViewCellStyle3;
             gridSequence.RowHeadersVisible = false;
             gridSequence.SelectionMode = DataGridViewSelectionMode.CellSelect;
-            gridSequence.Size = new Size(314, 174);
+            gridSequence.Size = new Size(314, 134);
             gridSequence.TabIndex = 1;
             gridSequence.CellClick += gridSequence_CellClick;
             gridSequence.CellContentClick += gridSequence_CellContentClick;
@@ -183,14 +185,17 @@ namespace DynamiX_HMI.Sequencer
             tableLayoutPanel1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3333321F));
             tableLayoutPanel1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3333321F));
             tableLayoutPanel1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3333321F));
-            tableLayoutPanel1.Controls.Add(buttonAdd, 0, 1);
-            tableLayoutPanel1.Controls.Add(gridSequence, 0, 0);
-            tableLayoutPanel1.Controls.Add(buttonLoad, 1, 1);
-            tableLayoutPanel1.Controls.Add(buttonSave, 2, 1);
+            tableLayoutPanel1.Controls.Add(buttonAdd, 0, 2);
+            tableLayoutPanel1.Controls.Add(gridSequence, 0, 1);
+            tableLayoutPanel1.Controls.Add(buttonLoad, 1, 2);
+            tableLayoutPanel1.Controls.Add(buttonSave, 2, 2);
+            tableLayoutPanel1.Controls.Add(labelRunName, 0, 0);
+            tableLayoutPanel1.Controls.Add(textBoxRunName, 1, 0);
             tableLayoutPanel1.Dock = DockStyle.Fill;
             tableLayoutPanel1.Location = new Point(0, 0);
             tableLayoutPanel1.Name = "tableLayoutPanel1";
-            tableLayoutPanel1.RowCount = 2;
+            tableLayoutPanel1.RowCount = 3;
+            tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             tableLayoutPanel1.Size = new Size(320, 220);
@@ -228,6 +233,27 @@ namespace DynamiX_HMI.Sequencer
             buttonSave.UseVisualStyleBackColor = true;
             buttonSave.Click += buttonSave_Click;
             // 
+            // labelRunName
+            // 
+            labelRunName.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            labelRunName.AutoSize = true;
+            labelRunName.Location = new Point(31, 3);
+            labelRunName.Margin = new Padding(3);
+            labelRunName.Name = "labelRunName";
+            labelRunName.Padding = new Padding(3);
+            labelRunName.Size = new Size(72, 21);
+            labelRunName.TabIndex = 4;
+            labelRunName.Text = "Run Name:";
+            // 
+            // textBoxRunName
+            // 
+            tableLayoutPanel1.SetColumnSpan(textBoxRunName, 2);
+            textBoxRunName.Dock = DockStyle.Fill;
+            textBoxRunName.Location = new Point(109, 3);
+            textBoxRunName.Name = "textBoxRunName";
+            textBoxRunName.Size = new Size(208, 23);
+            textBoxRunName.TabIndex = 5;
+            // 
             // SequencePanel
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
@@ -237,6 +263,7 @@ namespace DynamiX_HMI.Sequencer
             Size = new Size(320, 220);
             ((System.ComponentModel.ISupportInitialize)gridSequence).EndInit();
             tableLayoutPanel1.ResumeLayout(false);
+            tableLayoutPanel1.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -253,5 +280,7 @@ namespace DynamiX_HMI.Sequencer
         private Button buttonLoad;
         private Button buttonSave;
         private Button buttonAdd;
+        private Label labelRunName;
+        private TextBox textBoxRunName;
     }
 }

@@ -31,10 +31,10 @@ namespace DynamiX_HMI.Grapher
         {
             components = new System.ComponentModel.Container();
             layout = new TableLayoutPanel();
-            buttonOpen = new Button();
-            groupBoxRuns = new GroupBox();
             flowRuns = new FlowLayoutPanel();
+            buttonImport = new Button();
             buttonExport = new Button();
+            groupBoxRuns = new GroupBox();
             toolTip = new ToolTip(components);
             layout.SuspendLayout();
             groupBoxRuns.SuspendLayout();
@@ -46,7 +46,7 @@ namespace DynamiX_HMI.Grapher
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             layout.Controls.Add(flowRuns, 0, 1);
-            layout.Controls.Add(buttonOpen, 0, 0);
+            layout.Controls.Add(buttonImport, 0, 0);
             layout.Controls.Add(buttonExport, 1, 0);
             layout.Dock = DockStyle.Fill;
             layout.Location = new Point(4, 20);
@@ -57,30 +57,6 @@ namespace DynamiX_HMI.Grapher
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             layout.Size = new Size(276, 383);
             layout.TabIndex = 0;
-            // 
-            // buttonOpen
-            // 
-            buttonOpen.AutoSize = true;
-            buttonOpen.Dock = DockStyle.Fill;
-            buttonOpen.Location = new Point(3, 3);
-            buttonOpen.Name = "buttonOpen";
-            buttonOpen.Size = new Size(132, 34);
-            buttonOpen.TabIndex = 0;
-            buttonOpen.Text = "Import Run";
-            buttonOpen.UseVisualStyleBackColor = true;
-            buttonOpen.Click += buttonOpen_Click;
-            // 
-            // groupBoxRuns
-            // 
-            groupBoxRuns.Controls.Add(layout);
-            groupBoxRuns.Dock = DockStyle.Fill;
-            groupBoxRuns.Location = new Point(0, 0);
-            groupBoxRuns.Name = "groupBoxRuns";
-            groupBoxRuns.Padding = new Padding(4);
-            groupBoxRuns.Size = new Size(284, 407);
-            groupBoxRuns.TabIndex = 1;
-            groupBoxRuns.TabStop = false;
-            groupBoxRuns.Text = "Runs";
             // 
             // flowRuns
             // 
@@ -94,6 +70,18 @@ namespace DynamiX_HMI.Grapher
             flowRuns.TabIndex = 0;
             flowRuns.WrapContents = false;
             // 
+            // buttonImport
+            // 
+            buttonImport.AutoSize = true;
+            buttonImport.Dock = DockStyle.Fill;
+            buttonImport.Location = new Point(3, 3);
+            buttonImport.Name = "buttonImport";
+            buttonImport.Size = new Size(132, 34);
+            buttonImport.TabIndex = 0;
+            buttonImport.Text = "Import Run";
+            buttonImport.UseVisualStyleBackColor = true;
+            buttonImport.Click += buttonOpen_Click;
+            // 
             // buttonExport
             // 
             buttonExport.AutoSize = true;
@@ -106,6 +94,18 @@ namespace DynamiX_HMI.Grapher
             toolTip.SetToolTip(buttonExport, "One summary file with every run that is shown (the Show Speeds box ticked), one block per run");
             buttonExport.UseVisualStyleBackColor = true;
             buttonExport.Click += buttonExport_Click;
+            // 
+            // groupBoxRuns
+            // 
+            groupBoxRuns.Controls.Add(layout);
+            groupBoxRuns.Dock = DockStyle.Fill;
+            groupBoxRuns.Location = new Point(0, 0);
+            groupBoxRuns.Name = "groupBoxRuns";
+            groupBoxRuns.Padding = new Padding(4);
+            groupBoxRuns.Size = new Size(284, 407);
+            groupBoxRuns.TabIndex = 1;
+            groupBoxRuns.TabStop = false;
+            groupBoxRuns.Text = "Runs";
             // 
             // RunPanel
             // 
@@ -123,7 +123,7 @@ namespace DynamiX_HMI.Grapher
         #endregion
 
         private TableLayoutPanel layout;
-        private Button buttonOpen;
+        private Button buttonImport;
         private Button buttonExport;
         private GroupBox groupBoxRuns;
         private FlowLayoutPanel flowRuns;
