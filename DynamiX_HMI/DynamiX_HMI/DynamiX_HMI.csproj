@@ -15,6 +15,12 @@
     <PackageReference Include="System.IO.Ports" Version="10.0.2" />
   </ItemGroup>
 
+  <!-- The simulated machine (DynamiX_Simulator, built by its build.bat): copied next to the exe if it exists.
+       The HMI works without it; the "Simulator" port then says the DLL is missing. -->
+  <ItemGroup>
+    <None Include="..\..\DynamiX_Simulator\bin\DynamiX_Simulator.dll" Condition="Exists('..\..\DynamiX_Simulator\bin\DynamiX_Simulator.dll')" Link="DynamiX_Simulator.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Update="Properties\Resources.Designer.cs">
       <DesignTime>True</DesignTime>

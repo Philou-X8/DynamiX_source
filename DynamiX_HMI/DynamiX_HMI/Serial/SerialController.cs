@@ -10,7 +10,7 @@ namespace DynamiX_HMI.Serial
 {
     public class SerialController
     {
-        private SerialPort sPort;
+        private DynoPort sPort;
         private SerialDecoder serialDecoder;
 
         private string port;
@@ -31,7 +31,7 @@ namespace DynamiX_HMI.Serial
             port = "COM4";
             baud = 115200;
 
-            sPort = new SerialPort(port, baud);
+            sPort = new DynoPort(port, baud);
             sPort.WriteTimeout = 500;
             sPort.ReadTimeout = 500;
             //sPort.DataReceived += SerialDataHandle;
@@ -75,7 +75,7 @@ namespace DynamiX_HMI.Serial
 
             try
             {
-                if (!SerialPort.GetPortNames().ToList().Contains(a_port))
+                if (!DynoPort.PortExists(a_port))
                 {
                     // TODO: Check emp
 
@@ -104,6 +104,11 @@ namespace DynamiX_HMI.Serial
             catch (UnauthorizedAccessException ex)
             {
                 msg = "Access denied";
+                ret = false;
+            }
+            catch (SimulatorUnavailableException ex)
+            {
+                msg = ex.Message;
                 ret = false;
             }
             catch (Exception ex)
@@ -157,7 +162,7 @@ namespace DynamiX_HMI.Serial
                 {
                     sPort.Close();
                 }
-                if( ! SerialPort.GetPortNames().ToList().Contains(port) )
+                if( ! DynoPort.PortExists(port) )
                 {
                     return "port '" + port + "' not available";
                 }
@@ -279,7 +284,7 @@ namespace DynamiX_HMI.Serial
                 catch { }
             }
         }
-        public void HandleSerialData(object sender, SerialDataReceivedEventArgs e)
+        public void HandleSerialData(object? sender, EventArgs e)
         {
             if(!sPort.IsOpen)
             {

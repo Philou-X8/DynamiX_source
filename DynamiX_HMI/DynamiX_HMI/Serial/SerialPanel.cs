@@ -101,7 +101,9 @@ namespace DynamiX_HMI.Serial
                 wanted = connected;
             }
 
-            listCom = SerialPort.GetPortNames().OrderBy(PortNumber).ThenBy(p => p, StringComparer.Ordinal).ToList();
+            // the simulator first, then the COM ports in number order
+            listCom = new List<string> { DynoPort.SimulatorName };
+            listCom.AddRange(SerialPort.GetPortNames().OrderBy(PortNumber).ThenBy(p => p, StringComparer.Ordinal));
 
             // untouched list: leave it alone (an open drop-down flickers when its items are replaced)
             if (!comboBoxCom.Items.Cast<object>().Select(o => o.ToString()).SequenceEqual(listCom))
