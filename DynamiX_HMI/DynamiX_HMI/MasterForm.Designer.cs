@@ -190,7 +190,7 @@
             buttonMachineStop.Name = "buttonMachineStop";
             buttonMachineStop.Size = new Size(265, 36);
             buttonMachineStop.TabIndex = 2;
-            buttonMachineStop.Text = "Stop/Abort";
+            buttonMachineStop.Text = "Abort";
             buttonMachineStop.UseVisualStyleBackColor = true;
             buttonMachineStop.Click += buttonMachineStop_Click;
             // 

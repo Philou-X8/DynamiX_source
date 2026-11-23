@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "config.h"
 #include "cycle_counter.h"
 #include "printf_format.h"
 #include "protocol.h"
@@ -100,7 +101,8 @@ private:
     };
     // The bottom out, shared by the TAR, GUI_bottom_out and the end of a run.
     enum class BottomOutPhase : uint8_t {
-        ReachSpeed, // TAR_CENTIHZ sent, waiting for the drive to get there
+        SlowDown,   // BOTTOM_OUT_CENTIHZ sent, waiting for the drive to report it
+        SlowSettle, // the speed is reported: let it settle before arming the stop point
         Seek,       // wait for the yoke to pass the stop point on its way down
         Stopping,   // stop sent, wait for the drive to reach 0 Hz
         Settle,     // stopped, let the yoke settle before reading where it is
@@ -154,7 +156,8 @@ private:
     void enterPanic(FaultReason reason, const char* fmt = nullptr, ...) PRINTF_FORMAT(3, 4);
 
     // --- Helpers
-    SpeedCheck checkSpeed(uint16_t targetCentiHz, uint32_t nowMs);
+    SpeedCheck checkSpeed(uint16_t targetCentiHz, uint32_t nowMs, int32_t toleranceCentiHz = Config::SPEED_TOLERANCE_CENTIHZ,
+                          uint32_t assumedMs = Config::SPEEDUP_ASSUMED_MS, uint32_t timeoutMs = Config::SPEEDUP_TIMEOUT_MS);
     void startPhaseClock(uint32_t nowMs);
     void startStrokeSearch(uint32_t nowMs);
     void setStroke(int32_t strokeMin, int32_t strokeMax);
@@ -214,7 +217,7 @@ private:
     uint32_t lastQueryMs_ = 0;   // last running-frequency query
     RestForce restForce_;        // TAR empty load, calibration bottom force
     StrokeFinder strokeFinder_;  // TAR: stroke from a settled range
-    BottomOutPhase bottomOutPhase_ = BottomOutPhase::ReachSpeed;
+    BottomOutPhase bottomOutPhase_ = BottomOutPhase::SlowDown;
     EndApproach approach_;       // bottom out stop point, calibration slow-down point
 
     // --- Armed: the run being prepared

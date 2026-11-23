@@ -665,34 +665,50 @@ void StateMachine::finishTar() {
 // Bottom out
 // =============================================================================
 
-// Parks the yoke at the bottom: brings the motor to TAR_CENTIHZ (from whatever
-// it turns at), then stops it when the yoke passes TAR_STOP_PERMILLE on its
-// way down; the motor still turns a little while it decelerates. The stroke
-// must be known and the motor running.
+// Parks the yoke at the bottom. First the motor slows to BOTTOM_OUT_CENTIHZ
+// (from whatever it turns at: after a fast run that takes a while) and the drive
+// has to REPORT that speed. Only then is the stop point armed: the stop is sent
+// when the yoke passes TAR_STOP_PERMILLE on its way down, and the motor still
+// turns a little while it decelerates, the less the slower it was turning. The
+// stroke must be known and the motor running.
 bool StateMachine::startBottomOut(uint32_t nowMs) {
-    if (!drive_->setFrequency(TAR_CENTIHZ)) {
+    if (!drive_->setFrequency(BOTTOM_OUT_CENTIHZ)) {
         enterPanic(FaultReason::DriveFault, "drive command not sent");
         return false;
     }
-    drive_->forgetRunningFrequency();
+    drive_->forgetRunningFrequency(); // the speed the drive reported before doesn't count
+    lastQueryMs_ = nowMs - DRIVE_QUERY_PERIOD_MS; // ask right away
     startPhaseClock(nowMs);
-    bottomOutPhase_ = BottomOutPhase::ReachSpeed;
+    bottomOutPhase_ = BottomOutPhase::SlowDown;
+    report(Cmd::ESP_debug, "Bottom out: slowing to %u.%02u Hz", (unsigned)(BOTTOM_OUT_CENTIHZ / 100),
+           (unsigned)(BOTTOM_OUT_CENTIHZ % 100));
     return true;
 }
 
 StateMachine::Progress StateMachine::updateBottomOut(uint32_t nowMs) {
     switch (bottomOutPhase_) {
-        case BottomOutPhase::ReachSpeed:
-            switch (checkSpeed(TAR_CENTIHZ, nowMs)) {
+        case BottomOutPhase::SlowDown:
+            switch (checkSpeed(BOTTOM_OUT_CENTIHZ, nowMs, BOTTOM_OUT_TOLERANCE_CENTIHZ, BOTTOM_OUT_ASSUMED_MS,
+                               BOTTOM_OUT_TIMEOUT_MS)) {
                 case SpeedCheck::Waiting:
                     return Progress::Busy;
                 case SpeedCheck::TimedOut:
-                    enterPanic(FaultReason::DriveFault, "didn't reach %u.%02u Hz", (unsigned)(TAR_CENTIHZ / 100),
-                               (unsigned)(TAR_CENTIHZ % 100));
+                    enterPanic(FaultReason::DriveFault, "didn't slow to %u.%02u Hz", (unsigned)(BOTTOM_OUT_CENTIHZ / 100),
+                               (unsigned)(BOTTOM_OUT_CENTIHZ % 100));
                     return Progress::Failed;
                 case SpeedCheck::Reached:
                     break;
             }
+            startPhaseClock(nowMs);
+            bottomOutPhase_ = BottomOutPhase::SlowSettle;
+            return Progress::Busy;
+
+        case BottomOutPhase::SlowSettle:
+            if (nowMs - phaseStartMs_ < BOTTOM_OUT_SETTLE_MS) {
+                return Progress::Busy;
+            }
+            report(Cmd::ESP_debug, "Bottom out: at %u.%02u Hz, looking for the stop point",
+                   (unsigned)(BOTTOM_OUT_CENTIHZ / 100), (unsigned)(BOTTOM_OUT_CENTIHZ % 100));
             approach_.start(strokeMin_, strokeMax_, BOTTOM_AT_HIGH_POSITION, TAR_STOP_PERMILLE);
             startPhaseClock(nowMs);
             bottomOutPhase_ = BottomOutPhase::Seek;
@@ -882,7 +898,8 @@ void StateMachine::enterPanic(FaultReason reason, const char* fmt, ...) {
 // Asks the drive for its running frequency every DRIVE_QUERY_PERIOD_MS and
 // compares the latest answer with the target. A drive that never answers is
 // assumed to get there in SPEEDUP_ASSUMED_MS.
-StateMachine::SpeedCheck StateMachine::checkSpeed(uint16_t targetCentiHz, uint32_t nowMs) {
+StateMachine::SpeedCheck StateMachine::checkSpeed(uint16_t targetCentiHz, uint32_t nowMs, int32_t toleranceCentiHz,
+                                                  uint32_t assumedMs, uint32_t timeoutMs) {
     if (nowMs - lastQueryMs_ >= DRIVE_QUERY_PERIOD_MS) {
         lastQueryMs_ = nowMs;
         drive_->queryRunningFrequency(); // refused = queue full, tried again next period
@@ -891,13 +908,13 @@ StateMachine::SpeedCheck StateMachine::checkSpeed(uint16_t targetCentiHz, uint32
     uint16_t centiHz;
     if (drive_->runningFrequency(centiHz)) {
         const int32_t diff = (int32_t)centiHz - (int32_t)targetCentiHz;
-        if (diff <= SPEED_TOLERANCE_CENTIHZ && diff >= -SPEED_TOLERANCE_CENTIHZ) {
+        if (diff <= toleranceCentiHz && diff >= -toleranceCentiHz) {
             return SpeedCheck::Reached;
         }
-    } else if (waited >= SPEEDUP_ASSUMED_MS) {
+    } else if (waited >= assumedMs) {
         return SpeedCheck::Reached;
     }
-    return waited >= SPEEDUP_TIMEOUT_MS ? SpeedCheck::TimedOut : SpeedCheck::Waiting;
+    return waited >= timeoutMs ? SpeedCheck::TimedOut : SpeedCheck::Waiting;
 }
 
 void StateMachine::startPhaseClock(uint32_t nowMs) {

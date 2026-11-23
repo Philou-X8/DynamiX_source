@@ -869,6 +869,62 @@ TEST(abort_stops_everything) {
     CHECK(g_guiEvents.back().kind == GuiEvent::Flush); // the points so far still go out
 }
 
+// The bottom out at the end of a run: the drive first slows to BOTTOM_OUT_CENTIHZ and has to be there
+// (reported by the drive) before the stop point is looked for. The stop must then be sent at that speed,
+// not at the speed of the last step.
+static double hzWhenTheStopIsSent(Sim& sim) {
+    double hz = -1;
+    sim.runUntil([&] {
+        if (!sim.m.running) {
+            hz = sim.m.hz;
+            return true;
+        }
+        return false;
+    }, 90000);
+    return hz;
+}
+
+TEST(run_end_slows_down_before_the_bottom_out) {
+    auto sim = tarredSim();
+    sim->startRun({{40.0, 3}}); // 4 turns of the crank per second
+    CHECK(sim->runUntil([&] { return sim->count(Cmd::ESP_sequence_separator) == 1; }, 60000));
+    const double hz = hzWhenTheStopIsSent(*sim);
+    const double slow = Config::BOTTOM_OUT_CENTIHZ / 100.0;
+    std::printf("    the stop was sent at %.2f Hz (bottom out speed %.2f Hz)\n", hz, slow);
+    CHECK(hz > slow - 0.3 && hz < slow + 0.3);
+    CHECK(sim->anyText(Cmd::ESP_debug, "Bottom out: slowing"));
+    CHECK(sim->anyText(Cmd::ESP_debug, "looking for the stop point"));
+    CHECK(sim->runUntilState(State::Idle, 60000));
+    // run_finished is sent as the end of the last points flush
+    const auto flush = std::find_if(g_guiEvents.rbegin(), g_guiEvents.rend(),
+                                    [](const GuiEvent& e) { return e.kind == GuiEvent::Flush; });
+    CHECK(flush != g_guiEvents.rend() && flush->flag == Cmd::ESP_run_finished);
+    CHECK(sim->count(Cmd::ESP_emergency) == 0);
+}
+
+TEST(bottom_out_waits_for_the_drive_to_really_slow_down) {
+    auto sim = tarredSim();
+    sim->m.rampHzPerS = 4; // a slow ramp: 20 Hz to 2 Hz takes 4.5 s, longer than the old 3 s assumption
+    sim->startRun({{20.0, 3}});
+    CHECK(sim->runUntil([&] { return sim->count(Cmd::ESP_sequence_separator) == 1; }, 90000));
+    const double hz = hzWhenTheStopIsSent(*sim);
+    const double slow = Config::BOTTOM_OUT_CENTIHZ / 100.0;
+    CHECK(hz > slow - 0.3 && hz < slow + 0.3);
+    CHECK(sim->runUntilState(State::Idle, 60000));
+    CHECK(sim->count(Cmd::ESP_emergency) == 0);
+}
+
+TEST(bottom_out_that_never_slows_down_is_a_fault) {
+    auto sim = tarredSim();
+    sim->startRun({{10.0, 2}});
+    CHECK(sim->runUntil([&] { return sim->count(Cmd::ESP_sequence_separator) == 1; }, 60000));
+    sim->run(100);
+    sim->m.rampHzPerS = 0.01; // the drive can't get to 2 Hz (and says so): not within the timeout
+    CHECK(sim->runUntilState(State::Panic, Config::BOTTOM_OUT_TIMEOUT_MS + 5000));
+    CHECK(sim->anyText(Cmd::ESP_error, "didn't slow to"));
+    CHECK(sim->count(Cmd::ESP_emergency) == 1);
+}
+
 TEST(bottom_out_only) {
     Sim sim;
     sim.run(100);

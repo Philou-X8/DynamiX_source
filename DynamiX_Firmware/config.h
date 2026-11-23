@@ -218,12 +218,28 @@ constexpr uint32_t ARMED_TIMEOUT_MS = 30000;
 
 // --- TAR / bottom out (GUI_TAR_request, GUI_bottom_out, end of a run) ---------------------
 // TAR: empty load (motor stopped), then the stroke at TAR_CENTIHZ, then the
-// bottom out. The bottom out (also on its own, and after every run) brings the
-// motor to TAR_CENTIHZ, then stops it when the yoke passes TAR_STOP_PERMILLE
-// on its way down.
+// bottom out. The bottom out (also on its own, and after every run) first slows
+// the motor to BOTTOM_OUT_CENTIHZ, whatever it was turning at, and waits until
+// the drive reports that speed. Only then does it look for TAR_STOP_PERMILLE,
+// the point on the yoke's way down where the stop is sent.
 constexpr uint32_t TAR_SETTLE_MS = 500;           // motor stopped, wait before measuring the empty load
 constexpr uint32_t TAR_EMPTY_LOAD_SAMPLES = 500;  // empty load averaged over ~1 s
-constexpr uint16_t TAR_CENTIHZ = 500;             // TUNE: 5 Hz, slow so the stop lands close to the target
+constexpr uint16_t TAR_CENTIHZ = 500;             // TUNE: 5 Hz, the stroke search of the TAR
+// The bottom out speed: 1 to 2 Hz. The slower it turns when the stop is sent, the
+// shorter the distance it coasts while the drive decelerates, so the less it
+// overshoots after a fast run. TUNE: raising TAR_STOP_PERMILLE may be needed
+// after lowering this (the TAR report says where it stopped).
+constexpr uint16_t BOTTOM_OUT_CENTIHZ = 200;      // 2 Hz
+// The slow-down is only over when the drive REPORTS the speed, within this tight
+// window (the run's 0.5 Hz window would be a quarter of 2 Hz)...
+constexpr int32_t BOTTOM_OUT_TOLERANCE_CENTIHZ = 20;   // 0.20 Hz
+// ...and it has stayed there this long (the reading lags the real speed).
+constexpr uint32_t BOTTOM_OUT_SETTLE_MS = 500;
+// A drive that never answers the speed query can't confirm anything: assume the
+// speed after this long (enough for the ramp down from the fastest speed)...
+constexpr uint32_t BOTTOM_OUT_ASSUMED_MS = 15000;
+// ...and one that answers but never gets there is a fault after this long.
+constexpr uint32_t BOTTOM_OUT_TIMEOUT_MS = 40000;
 // Which end of the stroke is the bottom: true if the LVIT reads its highest
 // value at the bottom. TUNE: check the direction on the machine.
 constexpr bool BOTTOM_AT_HIGH_POSITION = false;
@@ -232,7 +248,7 @@ constexpr bool BOTTOM_AT_HIGH_POSITION = false;
 // turns a little while it decelerates; the TAR report gives where it really
 // stopped, use it to adjust this.
 constexpr int32_t TAR_STOP_PERMILLE = 800;
-constexpr uint32_t TAR_SEEK_TIMEOUT_MS = 10000;   // never passed the stop point -> Panic
+constexpr uint32_t TAR_SEEK_TIMEOUT_MS = 20000;   // never passed the stop point -> Panic (one cycle at 2 Hz takes 5 s)
 constexpr uint32_t TAR_STOPPED_SETTLE_MS = 500;   // after the drive reports 0 Hz, before reading the position
 
 } // namespace Config
