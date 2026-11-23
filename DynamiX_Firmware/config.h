@@ -244,7 +244,7 @@ constexpr bool BOTTOM_AT_HIGH_POSITION = false;
 // passes this point (in 0.1 % of the stroke, 1000 = bottom). The motor still
 // turns a little while it decelerates; the TAR report gives where it really
 // stopped, use it to adjust this.
-constexpr int32_t TAR_STOP_PERMILLE = 800;
+constexpr int32_t TAR_STOP_PERMILLE = 980; // bottom out in 000.0%
 constexpr uint32_t TAR_SEEK_TIMEOUT_MS = 20000;   // never passed the stop point -> Panic (one cycle at 2 Hz takes 5 s)
 constexpr uint32_t TAR_STOPPED_SETTLE_MS = 500;   // after the drive reports 0 Hz, before reading the position
 
