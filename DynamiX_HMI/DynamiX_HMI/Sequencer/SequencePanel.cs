@@ -28,6 +28,9 @@ namespace DynamiX_HMI.Sequencer
         /// <summary> Why the last MakeSequence or GetPlan failed (empty when it worked). </summary>
         public string ErrorText { get; private set; } = "";
 
+        /// <summary> The name typed for the next run ("" = none: the run is named after the date and time). </summary>
+        public string RunName => textBoxRunName.Text.Trim();
+
         public SequencePanel()
         {
             InitializeComponent();

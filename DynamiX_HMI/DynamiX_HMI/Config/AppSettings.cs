@@ -17,10 +17,10 @@ namespace DynamiX_HMI.Config
         [Category("1. General"), DisplayName("Units"), Description("SI: N, mm, mm/s.  Imperial: lbf, in, in/s. Only changes what is displayed and exported.")]
         public UnitSystem Units { get; set; } = UnitSystem.SI;
 
-        [Category("1. General"), DisplayName("Data folder"), Description("Where the sensor calibration history and the runs are kept: runs are saved in its Runs sub-folder.")]
+        [Category("1. General"), DisplayName("Data folder"), Description("Where the sensor calibration history and the sequences are kept. Runs live in the active project's folder instead.")]
         public string DataFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "DynamiX");
 
-        [Category("1. General"), DisplayName("Save runs automatically"), Description("Every finished (or interrupted) run is written to the Autosave subfolder of the runs folder as a raw data file. Nothing is loaded from there by itself: use Open to bring a run back.")]
+        [Category("1. General"), DisplayName("Save runs automatically"), Description("Every finished (or interrupted) run is written to the active project's folder as a raw data file, named after the run.")]
         public bool AutoSaveRuns { get; set; } = true;
 
         [Category("1. General"), DisplayName("Live view refresh (ms)"), Description("How often the live graphs are redrawn (50 to 1000). Raise it on a slow PC.")]
@@ -139,11 +139,12 @@ namespace DynamiX_HMI.Config
             return (int)Math.Round(Math.Clamp(value, -8388608.0, 8388607.0));
         }
 
-        [XmlIgnore, Browsable(false)]
-        public string RunsFolder => Path.Combine(DataFolder, "Runs");
-
-        /// <summary> Where the automatically saved runs go (nothing reads this folder by itself). </summary>
-        public string AutosaveFolder => Path.Combine(RunsFolder, "Autosave");
+        /// <summary>
+        /// The active project: a folder on disk (its name is the project's name) that the runs are read from and
+        /// written to. Saved when a project is chosen, loaded again at start-up. "" = none.
+        /// </summary>
+        [Browsable(false)]
+        public string ProjectPath { get; set; } = "";
 
         [XmlIgnore, Browsable(false)]
         public string CalibrationHistoryPath => Path.Combine(DataFolder, "sensor_calibration_history.csv");

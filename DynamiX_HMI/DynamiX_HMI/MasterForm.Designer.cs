@@ -72,6 +72,7 @@
             buttonProjectNew = new Button();
             textBoxProject = new TextBox();
             buttonProjectLoad = new Button();
+            buttonProjectBrowse = new Button();
             leftGridLayout.SuspendLayout();
             groupBoxMachine.SuspendLayout();
             tableLayoutPanel1.SuspendLayout();
@@ -625,12 +626,14 @@
             // 
             // tableLayoutPanelProject
             // 
-            tableLayoutPanelProject.ColumnCount = 2;
+            tableLayoutPanelProject.ColumnCount = 3;
             tableLayoutPanelProject.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             tableLayoutPanelProject.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tableLayoutPanelProject.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34F));
             tableLayoutPanelProject.Controls.Add(buttonProjectNew, 0, 1);
             tableLayoutPanelProject.Controls.Add(textBoxProject, 0, 0);
             tableLayoutPanelProject.Controls.Add(buttonProjectLoad, 1, 1);
+            tableLayoutPanelProject.Controls.Add(buttonProjectBrowse, 2, 0);
             tableLayoutPanelProject.Dock = DockStyle.Fill;
             tableLayoutPanelProject.Location = new Point(3, 19);
             tableLayoutPanelProject.Name = "tableLayoutPanelProject";
@@ -649,11 +652,13 @@
             buttonProjectNew.TabIndex = 3;
             buttonProjectNew.Text = "New Project";
             buttonProjectNew.UseVisualStyleBackColor = true;
+            buttonProjectNew.Click += buttonProjectNew_Click;
             // 
             // textBoxProject
             // 
             tableLayoutPanelProject.SetColumnSpan(textBoxProject, 2);
-            textBoxProject.Dock = DockStyle.Fill;
+            textBoxProject.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            textBoxProject.ReadOnly = true;
             textBoxProject.Location = new Point(3, 3);
             textBoxProject.Name = "textBoxProject";
             textBoxProject.Size = new Size(233, 23);
@@ -661,6 +666,7 @@
             // 
             // buttonProjectLoad
             // 
+            tableLayoutPanelProject.SetColumnSpan(buttonProjectLoad, 2);
             buttonProjectLoad.Dock = DockStyle.Fill;
             buttonProjectLoad.Location = new Point(122, 39);
             buttonProjectLoad.Name = "buttonProjectLoad";
@@ -668,6 +674,18 @@
             buttonProjectLoad.TabIndex = 4;
             buttonProjectLoad.Text = "Load Project";
             buttonProjectLoad.UseVisualStyleBackColor = true;
+            buttonProjectLoad.Click += buttonProjectLoad_Click;
+            // 
+            // buttonProjectBrowse
+            // 
+            buttonProjectBrowse.Dock = DockStyle.Fill;
+            buttonProjectBrowse.Margin = new Padding(0, 3, 3, 3);
+            buttonProjectBrowse.Name = "buttonProjectBrowse";
+            buttonProjectBrowse.Size = new Size(31, 27);
+            buttonProjectBrowse.TabIndex = 2;
+            buttonProjectBrowse.Text = "...";
+            buttonProjectBrowse.UseVisualStyleBackColor = true;
+            buttonProjectBrowse.Click += buttonProjectLoad_Click;
             // 
             // MasterForm
             // 
@@ -748,6 +766,7 @@
         private TextBox textBoxProject;
         private Button buttonProjectLoad;
         private Button buttonProjectNew;
+        private Button buttonProjectBrowse;
         private TableLayoutPanel tableLayoutPanelProject;
     }
 }

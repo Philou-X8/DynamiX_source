@@ -31,8 +31,11 @@ namespace DynamiX_HMI.Grapher
         private List<(double targetMmS, double hz, int cycles)> plan = new List<(double, double, int)>();
         private readonly Queue<PendingSection> pending = new Queue<PendingSection>();
         private int sectionsSeen;
-        private int runCounter;                       // runs started since the program started, for the run names
         private double boundaryTempC = double.NaN;
+
+        /// <summary> The active project's folder ("" = no project: nothing can be measured). </summary>
+        public string ProjectFolder { get; private set; } = "";
+        public bool HasProject => ProjectFolder.Length > 0;
 
         public GraphController(RunPanel runs, GraphPanel graph, Action<string> message)
         {
@@ -45,7 +48,7 @@ namespace DynamiX_HMI.Grapher
             runPanel.ExportRequested = () => ExportSummary(runPanel.CheckedRuns().ToList());
             runPanel.ExportRunRequested = run => ExportSummary(new List<RunEntry> { run });
             runPanel.SavePointsRequested = SavePoints;
-            runPanel.OpenRequested = OpenFiles;
+            runPanel.ImportRequested = ImportFiles;
             runPanel.DeleteRequested = DeleteRun;
         }
 
@@ -70,9 +73,10 @@ namespace DynamiX_HMI.Grapher
         /// <summary>
         /// Start of a run: a new entry at the top of the run list. 'sequencePlan' is what was sent to the ESP32 (one
         /// entry per speed, in order), 'calibration' what it measured before the run, 'tempC' the damper temperature
-        /// (0 = none).
+        /// (0 = none). 'name' is the name typed for the run ("" = the date and time); a name already used in the
+        /// project gets " 1", " 2"... added.
         /// </summary>
-        public void BeginRun(List<(double targetMmS, double hz, int cycles)> sequencePlan, RunCalibration calibration, double tempC)
+        public void BeginRun(List<(double targetMmS, double hz, int cycles)> sequencePlan, RunCalibration calibration, double tempC, string name)
         {
             if (current != null)
             {
@@ -84,10 +88,33 @@ namespace DynamiX_HMI.Grapher
             boundaryTempC = ToTemp(tempC);
 
             DateTime now = DateTime.Now;
-            runCounter++;
-            var run = new TestRun { Name = now.ToString("yyMMdd_HHmmss") + "_Run_" + runCounter, Date = now, Calibration = calibration };
+            name = UniqueName(name.Length > 0 ? name : TestRun.DefaultName(now), null);
+            var run = new TestRun { Name = name, Date = now, Calibration = calibration };
             current = new RunEntry(run) { Loaded = true, InProgress = true };
-            runPanel.AddEntry(current);
+            runPanel.AddEntry(current, true);
+        }
+
+        /// <summary>
+        /// The name, or the name with " n" added (n = 1, 2...) if another run of the list or a file of the project
+        /// folder already has it. 'except' is a run that doesn't count (the one being named).
+        /// </summary>
+        private string UniqueName(string wanted, RunEntry? except)
+        {
+            bool Taken(string n) =>
+                runPanel.Entries.Any(r => r != except && string.Equals(r.Display, n, StringComparison.OrdinalIgnoreCase))
+                || File.Exists(TestRun.FilePathFor(ProjectFolder, n));
+            if (!Taken(wanted))
+            {
+                return wanted;
+            }
+            for (int i = 1; ; i++)
+            {
+                string candidate = wanted + " " + i;
+                if (!Taken(candidate))
+                {
+                    return candidate;
+                }
+            }
         }
 
         /// <summary> Raw points from the ESP32: converted with the sensor calibration, drawn live, and kept for the run. </summary>
@@ -214,7 +241,11 @@ namespace DynamiX_HMI.Grapher
             {
                 try
                 {
-                    string path = TestRun.MakeFileName(AppSettings.Current.AutosaveFolder, entry.Run.Date);
+                    if (File.Exists(TestRun.FilePathFor(ProjectFolder, entry.Display))) // taken by a file added meanwhile
+                    {
+                        entry.Display = entry.Run.Name = UniqueName(entry.Display, entry);
+                    }
+                    string path = TestRun.FilePathFor(ProjectFolder, entry.Display);
                     entry.Run.Save(path);
                     entry.Path = path;
                     say("Run saved: " + path);
@@ -307,6 +338,10 @@ namespace DynamiX_HMI.Grapher
             try
             {
                 TestRun header = TestRun.LoadHeader(path);
+                if (string.IsNullOrWhiteSpace(header.Name))
+                {
+                    header.Name = Path.GetFileNameWithoutExtension(path);
+                }
                 var entry = new RunEntry(header);
                 foreach (StepInfo info in header.Steps)
                 {
@@ -321,22 +356,96 @@ namespace DynamiX_HMI.Grapher
             }
         }
 
-        private void OpenFiles(string[] paths)
+        /// <summary> True if a run of the list is not in a file (it would be lost if the list is emptied). </summary>
+        public bool HasUnsavedRuns => runPanel.Entries.Any(r => r.InProgress || (r.Path.Length == 0 && r.Run.Samples.Count > 0));
+
+        /// <summary>
+        /// Makes a folder the active project: the list is emptied and every run file of the folder is listed
+        /// (header only, none shown). False if the folder can't be read: no project is active then.
+        /// </summary>
+        public bool LoadProject(string folder)
         {
-            foreach (string path in paths)
+            runPanel.Clear();
+            ProjectFolder = "";
+            var found = new List<RunEntry>();
+            try
             {
-                RunEntry? existing = runPanel.Entries.FirstOrDefault(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
-                if (existing != null)
+                foreach (string path in Directory.EnumerateFiles(folder, "*.csv"))
                 {
+                    RunEntry? entry = ReadHeader(path);
+                    if (entry != null)
+                    {
+                        found.Add(entry);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                say("Could not read the project folder: " + ex.Message);
+                return false;
+            }
+            ProjectFolder = folder;
+            foreach (RunEntry entry in found.OrderByDescending(e => e.Run.Date)) // newest first
+            {
+                runPanel.AddEntry(entry, false, false);
+            }
+            say("Project " + Path.GetFileName(folder.TrimEnd('\\', '/')) + ": " + found.Count + (found.Count == 1 ? " run" : " runs"));
+            return true;
+        }
+
+        /// <summary> The Import button: each run file is copied into the project folder and listed (shown). </summary>
+        private void ImportFiles(string[] paths)
+        {
+            if (!HasProject)
+            {
+                say("DENIED: select a project first");
+                return;
+            }
+            string projectDir = Path.GetFullPath(ProjectFolder).TrimEnd('\\', '/');
+            foreach (string source in paths)
+            {
+                string name = Path.GetFileName(source);
+                string? sourceDir = Path.GetDirectoryName(Path.GetFullPath(source))?.TrimEnd('\\', '/');
+                if (string.Equals(sourceDir, projectDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    say(name + " is already in the project");
                     continue;
                 }
-                RunEntry? entry = ReadHeader(path);
-                if (entry == null)
+                RunEntry? header = ReadHeader(source);
+                if (header == null)
                 {
-                    say(Path.GetFileName(path) + " is not a DynamiX run file");
+                    say(name + " is not a DynamiX run file");
                     continue;
                 }
-                runPanel.AddEntry(entry);
+
+                try
+                {
+                    string runName = header.Display;
+                    string unique = UniqueName(runName, null);
+                    string destination = Path.Combine(ProjectFolder, name);
+                    if (unique == runName && !File.Exists(destination))
+                    {
+                        File.Copy(source, destination);
+                    }
+                    else
+                    {
+                        // the name (or the file name) is taken: the copy is a run of its own, with " n" added to both
+                        TestRun run = TestRun.Load(source);
+                        run.Name = unique;
+                        destination = TestRun.FilePathFor(ProjectFolder, unique);
+                        run.Save(destination);
+                    }
+                    RunEntry? added = ReadHeader(destination);
+                    if (added != null)
+                    {
+                        runPanel.AddEntry(added, true);
+                        say("Imported " + added.Display);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    say("Could not import " + name + ": " + ex.Message);
+                }
             }
         }
 
@@ -374,8 +483,7 @@ namespace DynamiX_HMI.Grapher
                 return;
             }
 
-            string folder = AppSettings.Current.RunsFolder;
-            Directory.CreateDirectory(folder);
+            string folder = ProjectFolder;
             using var dialog = new SaveFileDialog
             {
                 Filter = "Excel workbook (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv",
@@ -406,7 +514,7 @@ namespace DynamiX_HMI.Grapher
                 say("This run has no points to save");
                 return;
             }
-            string folder = Directory.Exists(AppSettings.Current.RunsFolder) ? AppSettings.Current.RunsFolder : "";
+            string folder = Directory.Exists(ProjectFolder) ? ProjectFolder : "";
             using var dialog = new SaveFileDialog
             {
                 Filter = "DynamiX run (*.csv)|*.csv",

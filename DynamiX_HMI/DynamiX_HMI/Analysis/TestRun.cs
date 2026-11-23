@@ -242,16 +242,18 @@ namespace DynamiX_HMI.Analysis
             }
         }
 
-        /// <summary>A file name from the date, with a number added if another run already has it.</summary>
-        public static string MakeFileName(string folder, DateTime date)
+        /// <summary>Default run name: the date and time, YYMMDD_HHMMSS.</summary>
+        public static string DefaultName(DateTime date)
         {
-            string stem = Path.Combine(folder, date.ToString("yyMMdd_HHmmss", Inv));
-            string path = stem + ".csv";
-            for (int n = 2; File.Exists(path); n++)
-            {
-                path = stem + "_" + n + ".csv";
-            }
-            return path;
+            return date.ToString("yyMMdd_HHmmss", Inv);
+        }
+
+        /// <summary>The run's file in a folder: its name (characters a file name can't have replaced by '_') and .csv.</summary>
+        public static string FilePathFor(string folder, string name)
+        {
+            char[] bad = Path.GetInvalidFileNameChars();
+            string stem = string.Concat(name.Trim().Select(c => Array.IndexOf(bad, c) >= 0 ? '_' : c));
+            return Path.Combine(folder, (stem.Length > 0 ? stem : "run") + ".csv");
         }
 
         private static string Temp(double celsius)

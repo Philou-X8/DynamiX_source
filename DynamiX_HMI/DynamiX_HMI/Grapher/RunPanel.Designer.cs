@@ -31,21 +31,34 @@ namespace DynamiX_HMI.Grapher
         {
             components = new System.ComponentModel.Container();
             layout = new TableLayoutPanel();
-            flowRuns = new FlowLayoutPanel();
+            treeRuns = new CheckTreeView();
+            swatches = new ImageList(components);
             buttonImport = new Button();
             buttonExport = new Button();
             groupBoxRuns = new GroupBox();
             toolTip = new ToolTip(components);
+            menuRun = new ContextMenuStrip(components);
+            menuShowAll = new ToolStripMenuItem();
+            menuHideAll = new ToolStripMenuItem();
+            menuDefaultColour = new ToolStripMenuItem();
+            toolStripSeparator1 = new ToolStripSeparator();
+            menuSaveSummary = new ToolStripMenuItem();
+            menuSavePoints = new ToolStripMenuItem();
+            toolStripSeparator2 = new ToolStripSeparator();
+            menuShowInFolder = new ToolStripMenuItem();
+            menuDeleteFile = new ToolStripMenuItem();
+            menuRemove = new ToolStripMenuItem();
             layout.SuspendLayout();
             groupBoxRuns.SuspendLayout();
+            menuRun.SuspendLayout();
             SuspendLayout();
-            // 
+            //
             // layout
-            // 
+            //
             layout.ColumnCount = 2;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            layout.Controls.Add(flowRuns, 0, 1);
+            layout.Controls.Add(treeRuns, 0, 1);
             layout.Controls.Add(buttonImport, 0, 0);
             layout.Controls.Add(buttonExport, 1, 0);
             layout.Dock = DockStyle.Fill;
@@ -57,21 +70,35 @@ namespace DynamiX_HMI.Grapher
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             layout.Size = new Size(276, 383);
             layout.TabIndex = 0;
-            // 
-            // flowRuns
-            // 
-            flowRuns.AutoScroll = true;
-            layout.SetColumnSpan(flowRuns, 2);
-            flowRuns.Dock = DockStyle.Fill;
-            flowRuns.FlowDirection = FlowDirection.TopDown;
-            flowRuns.Location = new Point(3, 43);
-            flowRuns.Name = "flowRuns";
-            flowRuns.Size = new Size(270, 337);
-            flowRuns.TabIndex = 0;
-            flowRuns.WrapContents = false;
-            // 
+            //
+            // treeRuns
+            //
+            treeRuns.BorderStyle = BorderStyle.FixedSingle;
+            treeRuns.CheckBoxes = true;
+            layout.SetColumnSpan(treeRuns, 2);
+            treeRuns.Dock = DockStyle.Fill;
+            treeRuns.HideSelection = false;
+            treeRuns.ImageIndex = 0;
+            treeRuns.ImageList = swatches;
+            treeRuns.ItemHeight = 20;
+            treeRuns.Location = new Point(3, 43);
+            treeRuns.Name = "treeRuns";
+            treeRuns.SelectedImageIndex = 0;
+            treeRuns.ShowNodeToolTips = true;
+            treeRuns.Size = new Size(270, 337);
+            treeRuns.TabIndex = 0;
+            treeRuns.AfterCheck += treeRuns_AfterCheck;
+            treeRuns.NodeMouseClick += treeRuns_NodeMouseClick;
+            treeRuns.MouseClick += treeRuns_MouseClick;
+            //
+            // swatches
+            //
+            swatches.ColorDepth = ColorDepth.Depth32Bit;
+            swatches.ImageSize = new Size(24, 14);
+            swatches.TransparentColor = Color.Transparent;
+            //
             // buttonImport
-            // 
+            //
             buttonImport.AutoSize = true;
             buttonImport.Dock = DockStyle.Fill;
             buttonImport.Location = new Point(3, 3);
@@ -79,11 +106,12 @@ namespace DynamiX_HMI.Grapher
             buttonImport.Size = new Size(132, 34);
             buttonImport.TabIndex = 0;
             buttonImport.Text = "Import Run";
+            toolTip.SetToolTip(buttonImport, "Copy run files into the active project's folder and list them");
             buttonImport.UseVisualStyleBackColor = true;
-            buttonImport.Click += buttonOpen_Click;
-            // 
+            buttonImport.Click += buttonImport_Click;
+            //
             // buttonExport
-            // 
+            //
             buttonExport.AutoSize = true;
             buttonExport.Dock = DockStyle.Fill;
             buttonExport.Location = new Point(141, 3);
@@ -91,12 +119,12 @@ namespace DynamiX_HMI.Grapher
             buttonExport.Size = new Size(132, 34);
             buttonExport.TabIndex = 1;
             buttonExport.Text = "Export Selected";
-            toolTip.SetToolTip(buttonExport, "One summary file with every run that is shown (the Show Speeds box ticked), one block per run");
+            toolTip.SetToolTip(buttonExport, "One summary file with every run that has a speed ticked, one block per run");
             buttonExport.UseVisualStyleBackColor = true;
             buttonExport.Click += buttonExport_Click;
-            // 
+            //
             // groupBoxRuns
-            // 
+            //
             groupBoxRuns.Controls.Add(layout);
             groupBoxRuns.Dock = DockStyle.Fill;
             groupBoxRuns.Location = new Point(0, 0);
@@ -106,9 +134,85 @@ namespace DynamiX_HMI.Grapher
             groupBoxRuns.TabIndex = 1;
             groupBoxRuns.TabStop = false;
             groupBoxRuns.Text = "Runs";
-            // 
+            //
+            // menuRun
+            //
+            menuRun.Items.AddRange(new ToolStripItem[] { menuShowAll, menuHideAll, menuDefaultColour, toolStripSeparator1, menuSaveSummary, menuSavePoints, toolStripSeparator2, menuShowInFolder, menuDeleteFile, menuRemove });
+            menuRun.Name = "menuRun";
+            menuRun.Size = new Size(181, 192);
+            menuRun.Closed += menuRun_Closed;
+            //
+            // menuShowAll
+            //
+            menuShowAll.Name = "menuShowAll";
+            menuShowAll.Size = new Size(180, 22);
+            menuShowAll.Text = "Show all speeds";
+            menuShowAll.Click += menuShowAll_Click;
+            //
+            // menuHideAll
+            //
+            menuHideAll.Name = "menuHideAll";
+            menuHideAll.Size = new Size(180, 22);
+            menuHideAll.Text = "Hide all speeds";
+            menuHideAll.Click += menuHideAll_Click;
+            //
+            // menuDefaultColour
+            //
+            menuDefaultColour.Name = "menuDefaultColour";
+            menuDefaultColour.Size = new Size(180, 22);
+            menuDefaultColour.Text = "Default colour";
+            menuDefaultColour.Click += menuDefaultColour_Click;
+            //
+            // toolStripSeparator1
+            //
+            toolStripSeparator1.Name = "toolStripSeparator1";
+            toolStripSeparator1.Size = new Size(177, 6);
+            //
+            // menuSaveSummary
+            //
+            menuSaveSummary.Name = "menuSaveSummary";
+            menuSaveSummary.Size = new Size(180, 22);
+            menuSaveSummary.Text = "Save summary...";
+            menuSaveSummary.ToolTipText = "Write the peak speeds and forces of this run (the ticked speeds) to an Excel or CSV file";
+            menuSaveSummary.Click += menuSaveSummary_Click;
+            //
+            // menuSavePoints
+            //
+            menuSavePoints.Name = "menuSavePoints";
+            menuSavePoints.Size = new Size(180, 22);
+            menuSavePoints.Text = "Save points as...";
+            menuSavePoints.ToolTipText = "Write a copy of the raw data points of this run to a CSV file";
+            menuSavePoints.Click += menuSavePoints_Click;
+            //
+            // toolStripSeparator2
+            //
+            toolStripSeparator2.Name = "toolStripSeparator2";
+            toolStripSeparator2.Size = new Size(177, 6);
+            //
+            // menuShowInFolder
+            //
+            menuShowInFolder.Name = "menuShowInFolder";
+            menuShowInFolder.Size = new Size(180, 22);
+            menuShowInFolder.Text = "Show in folder";
+            menuShowInFolder.Click += menuShowInFolder_Click;
+            //
+            // menuDeleteFile
+            //
+            menuDeleteFile.Name = "menuDeleteFile";
+            menuDeleteFile.Size = new Size(180, 22);
+            menuDeleteFile.Text = "Delete file...";
+            menuDeleteFile.Click += menuDeleteFile_Click;
+            //
+            // menuRemove
+            //
+            menuRemove.Name = "menuRemove";
+            menuRemove.Size = new Size(180, 22);
+            menuRemove.Text = "Remove from list";
+            menuRemove.ToolTipText = "Take the run off the list (a saved file stays in the project folder; load the project again to bring it back)";
+            menuRemove.Click += menuRemove_Click;
+            //
             // RunPanel
-            // 
+            //
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
             Controls.Add(groupBoxRuns);
@@ -117,6 +221,7 @@ namespace DynamiX_HMI.Grapher
             layout.ResumeLayout(false);
             layout.PerformLayout();
             groupBoxRuns.ResumeLayout(false);
+            menuRun.ResumeLayout(false);
             ResumeLayout(false);
         }
 
@@ -126,7 +231,19 @@ namespace DynamiX_HMI.Grapher
         private Button buttonImport;
         private Button buttonExport;
         private GroupBox groupBoxRuns;
-        private FlowLayoutPanel flowRuns;
+        private CheckTreeView treeRuns;
+        private ImageList swatches;
         private ToolTip toolTip;
+        private ContextMenuStrip menuRun;
+        private ToolStripMenuItem menuShowAll;
+        private ToolStripMenuItem menuHideAll;
+        private ToolStripMenuItem menuDefaultColour;
+        private ToolStripSeparator toolStripSeparator1;
+        private ToolStripMenuItem menuSaveSummary;
+        private ToolStripMenuItem menuSavePoints;
+        private ToolStripSeparator toolStripSeparator2;
+        private ToolStripMenuItem menuShowInFolder;
+        private ToolStripMenuItem menuDeleteFile;
+        private ToolStripMenuItem menuRemove;
     }
 }

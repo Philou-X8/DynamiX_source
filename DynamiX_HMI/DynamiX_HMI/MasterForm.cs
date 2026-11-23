@@ -47,6 +47,7 @@ namespace DynamiX_HMI
         // Calibration stroke may differ from the TAR stroke by this fraction before we warn
         private const float StrokeMismatchTolerance = 0.05f;
         private float temperatureData;
+        private readonly ToolTip projectTip = new ToolTip();
 
         public MasterForm()
         {
@@ -70,6 +71,24 @@ namespace DynamiX_HMI
             graphController = new GraphController(runPanel1, graphPanel1, logger.SetMessage);
 
             machineController = new MachineController(serialController);
+
+            // The active project: its folder is where the runs are read from and written to. Loaded again from the
+            // settings; no saved folder, or one that is gone: no project, and the machine stays locked.
+            textBoxProject.PlaceholderText = "No project selected";
+            textBoxProject.SizeChanged += (s, e) => ShowProjectPath();
+            string savedProject = AppSettings.Current.ProjectPath;
+            if (savedProject.Length > 0)
+            {
+                if (Directory.Exists(savedProject))
+                {
+                    OpenProject(savedProject);
+                }
+                else
+                {
+                    logger.SetMessage("Project folder not found: " + savedProject + ". No project loaded");
+                }
+            }
+            ShowProjectPath();
 
             // The options page takes the place of the graphs: the Options button swaps them
             rightGridLayout.Controls.Remove(optionPanel1);
@@ -252,6 +271,110 @@ namespace DynamiX_HMI
             graphController.SettingsChanged();
         }
 
+        // --------------------------------------------------------
+        // Project
+        // --------------------------------------------------------
+
+        /// <summary> The machine can't measure anything until a project says where the runs go. </summary>
+        private bool RequireProject()
+        {
+            if (graphController.HasProject)
+            {
+                return true;
+            }
+            logger.SetMessage("DENIED: no project selected (New Project or Load Project)");
+            return false;
+        }
+
+        /// <summary> New Project: pick a place and make the project's folder there (the dialog has Make New Folder). </summary>
+        private void buttonProjectNew_Click(object? sender, EventArgs e)
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Select the place for the new project, then press Make New Folder, name it and select it. "
+                              + "The folder's name is the project's name.",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true,
+                InitialDirectory = Directory.Exists(AppSettings.Current.DataFolder) ? AppSettings.Current.DataFolder : "",
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                ChangeProject(dialog.SelectedPath);
+            }
+        }
+
+        /// <summary> Load Project and [...]: pick the folder of an existing project. </summary>
+        private void buttonProjectLoad_Click(object? sender, EventArgs e)
+        {
+            string current = graphController.ProjectFolder;
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Select the project's folder",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = false,
+                InitialDirectory = Directory.Exists(current) ? Path.GetDirectoryName(current) ?? "" : "",
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                ChangeProject(dialog.SelectedPath);
+            }
+        }
+
+        /// <summary> The user chose another project: not while the machine is busy, and not if that loses a run. </summary>
+        private void ChangeProject(string folder)
+        {
+            if (machineConnected && !machineController.IsIdle)
+            {
+                logger.SetMessage("DENIED: stop the machine before changing the project");
+                return;
+            }
+            if (graphController.HasUnsavedRuns
+                && MessageBox.Show(this, "Some runs of the list were never saved (saving runs automatically is off). "
+                                         + "Changing the project loses them.\n\nChange the project anyway?",
+                                   "Change project", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+            OpenProject(folder);
+        }
+
+        /// <summary> Loads the project's runs, remembers its folder in the settings and shows it. </summary>
+        private void OpenProject(string folder)
+        {
+            if (graphController.LoadProject(folder))
+            {
+                AppSettings.Current.ProjectPath = folder;
+                try
+                {
+                    AppSettings.Current.Save(AppSettings.DefaultPath);
+                }
+                catch (Exception ex)
+                {
+                    logger.SetMessage("Could not save the settings: " + ex.Message);
+                }
+            }
+            ShowProjectPath();
+        }
+
+        /// <summary> The project's path in the text box; too long for it: the start is cut, so the last folder shows. </summary>
+        private void ShowProjectPath()
+        {
+            string path = graphController.ProjectFolder;
+            projectTip.SetToolTip(textBoxProject, path.Length > 0 ? path : "No project selected");
+            int available = textBoxProject.ClientSize.Width - 8;
+            string shown = path;
+            if (available > 0 && TextRenderer.MeasureText(path, textBoxProject.Font).Width > available)
+            {
+                int start = 1;
+                while (start < path.Length - 1 && TextRenderer.MeasureText("..." + path.Substring(start), textBoxProject.Font).Width > available)
+                {
+                    start++;
+                }
+                shown = "..." + path.Substring(start);
+            }
+            textBoxProject.Text = shown;
+        }
+
         private void buttonTar_Click(object sender, EventArgs e)
         {
             if (!machineConnected)
@@ -264,6 +387,10 @@ namespace DynamiX_HMI
                 logger.SetMessage("DENIED: TAR only from Idle");
                 return;
             }
+            if (!RequireProject())
+            {
+                return;
+            }
             HandleSerialCommand(new CommandPacket(CommandFlags.GUI_TAR_request, "")); // Idle -> Tar
         }
 
@@ -272,6 +399,11 @@ namespace DynamiX_HMI
             if (!machineConnected)
             {
                 logger.SetMessage("DENIED: Machine not connected");
+                return;
+            }
+            if (!RequireProject())
+            {
+                return;
             }
             HandleSerialCommand(new CommandPacket(CommandFlags.GUI_click_start, ""));
             //machineController.StartMachine();
@@ -443,7 +575,7 @@ namespace DynamiX_HMI
             {
                 plan = new List<(double, double, int)>();
             }
-            graphController.BeginRun(plan, runCalibration.Clone(), temperatureData);
+            graphController.BeginRun(plan, runCalibration.Clone(), temperatureData, sequencePanel1.RunName);
 
             // Send every step of the sequence (CommandFlags.GUI_send_sequence), then the start command.
             if (!sequencePanel1.MakeSequence(out List<CommandPacket> sequence))
