@@ -41,18 +41,7 @@ namespace DynamiX_HMI.Grapher
             pageForceSpeed = new TabPage();
             plotFv = new PlotControl();
             pagePeak = new TabPage();
-            splitPeak = new SplitContainer();
             plotPeak = new PlotControl();
-            table = new DataGridView();
-            columnRun = new DataGridViewTextBoxColumn();
-            columnTarget = new DataGridViewTextBoxColumn();
-            columnDriveHz = new DataGridViewTextBoxColumn();
-            columnCycles = new DataGridViewTextBoxColumn();
-            columnCompSpeed = new DataGridViewTextBoxColumn();
-            columnCompForce = new DataGridViewTextBoxColumn();
-            columnRebSpeed = new DataGridViewTextBoxColumn();
-            columnRebForce = new DataGridViewTextBoxColumn();
-            columnTemp = new DataGridViewTextBoxColumn();
             pageTime = new TabPage();
             tableLayoutTime = new TableLayoutPanel();
             plotTimeF = new PlotControl();
@@ -67,11 +56,6 @@ namespace DynamiX_HMI.Grapher
             pageForcePos.SuspendLayout();
             pageForceSpeed.SuspendLayout();
             pagePeak.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)splitPeak).BeginInit();
-            splitPeak.Panel1.SuspendLayout();
-            splitPeak.Panel2.SuspendLayout();
-            splitPeak.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)table).BeginInit();
             pageTime.SuspendLayout();
             tableLayoutTime.SuspendLayout();
             pageDebug.SuspendLayout();
@@ -190,7 +174,7 @@ namespace DynamiX_HMI.Grapher
             //
             // pagePeak
             //
-            pagePeak.Controls.Add(splitPeak);
+            pagePeak.Controls.Add(plotPeak);
             pagePeak.Location = new Point(4, 24);
             pagePeak.Name = "pagePeak";
             pagePeak.Size = new Size(592, 422);
@@ -198,103 +182,14 @@ namespace DynamiX_HMI.Grapher
             pagePeak.Text = "Peak";
             pagePeak.UseVisualStyleBackColor = true;
             //
-            // splitPeak
-            //
-            splitPeak.Dock = DockStyle.Fill;
-            splitPeak.Location = new Point(0, 0);
-            splitPeak.Name = "splitPeak";
-            splitPeak.Orientation = Orientation.Horizontal;
-            //
-            // splitPeak.Panel1
-            //
-            splitPeak.Panel1.Controls.Add(plotPeak);
-            //
-            // splitPeak.Panel2
-            //
-            splitPeak.Panel2.Controls.Add(table);
-            splitPeak.Size = new Size(592, 422);
-            splitPeak.SplitterDistance = 280;
-            splitPeak.TabIndex = 0;
-            //
             // plotPeak
             //
             plotPeak.BackColor = Color.White;
             plotPeak.Dock = DockStyle.Fill;
             plotPeak.Location = new Point(0, 0);
             plotPeak.Name = "plotPeak";
-            plotPeak.Size = new Size(592, 280);
+            plotPeak.Size = new Size(592, 422);
             plotPeak.TabIndex = 0;
-            //
-            // table
-            //
-            table.AllowUserToAddRows = false;
-            table.AllowUserToDeleteRows = false;
-            table.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            table.BackgroundColor = Color.White;
-            table.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
-            table.Columns.AddRange(new DataGridViewColumn[] { columnRun, columnTarget, columnDriveHz, columnCycles, columnCompSpeed, columnCompForce, columnRebSpeed, columnRebForce, columnTemp });
-            table.Dock = DockStyle.Fill;
-            table.Location = new Point(0, 0);
-            table.Name = "table";
-            table.ReadOnly = true;
-            table.RowHeadersVisible = false;
-            table.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            table.Size = new Size(592, 138);
-            table.TabIndex = 0;
-            //
-            // columnRun
-            //
-            columnRun.HeaderText = "Run";
-            columnRun.Name = "columnRun";
-            columnRun.ReadOnly = true;
-            //
-            // columnTarget
-            //
-            columnTarget.HeaderText = "Target";
-            columnTarget.Name = "columnTarget";
-            columnTarget.ReadOnly = true;
-            //
-            // columnDriveHz
-            //
-            columnDriveHz.HeaderText = "Drive Hz";
-            columnDriveHz.Name = "columnDriveHz";
-            columnDriveHz.ReadOnly = true;
-            //
-            // columnCycles
-            //
-            columnCycles.HeaderText = "Cycles";
-            columnCycles.Name = "columnCycles";
-            columnCycles.ReadOnly = true;
-            //
-            // columnCompSpeed
-            //
-            columnCompSpeed.HeaderText = "Comp. speed";
-            columnCompSpeed.Name = "columnCompSpeed";
-            columnCompSpeed.ReadOnly = true;
-            //
-            // columnCompForce
-            //
-            columnCompForce.HeaderText = "Comp. force";
-            columnCompForce.Name = "columnCompForce";
-            columnCompForce.ReadOnly = true;
-            //
-            // columnRebSpeed
-            //
-            columnRebSpeed.HeaderText = "Reb. speed";
-            columnRebSpeed.Name = "columnRebSpeed";
-            columnRebSpeed.ReadOnly = true;
-            //
-            // columnRebForce
-            //
-            columnRebForce.HeaderText = "Reb. force";
-            columnRebForce.Name = "columnRebForce";
-            columnRebForce.ReadOnly = true;
-            //
-            // columnTemp
-            //
-            columnTemp.HeaderText = "Temp. °C";
-            columnTemp.Name = "columnTemp";
-            columnTemp.ReadOnly = true;
             //
             // pageTime
             //
@@ -388,11 +283,6 @@ namespace DynamiX_HMI.Grapher
             pageForcePos.ResumeLayout(false);
             pageForceSpeed.ResumeLayout(false);
             pagePeak.ResumeLayout(false);
-            splitPeak.Panel1.ResumeLayout(false);
-            splitPeak.Panel2.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)splitPeak).EndInit();
-            splitPeak.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)table).EndInit();
             pageTime.ResumeLayout(false);
             tableLayoutTime.ResumeLayout(false);
             pageDebug.ResumeLayout(false);
@@ -412,18 +302,7 @@ namespace DynamiX_HMI.Grapher
         private TabPage pageForceSpeed;
         private PlotControl plotFv;
         private TabPage pagePeak;
-        private SplitContainer splitPeak;
         private PlotControl plotPeak;
-        private DataGridView table;
-        private DataGridViewTextBoxColumn columnRun;
-        private DataGridViewTextBoxColumn columnTarget;
-        private DataGridViewTextBoxColumn columnDriveHz;
-        private DataGridViewTextBoxColumn columnCycles;
-        private DataGridViewTextBoxColumn columnCompSpeed;
-        private DataGridViewTextBoxColumn columnCompForce;
-        private DataGridViewTextBoxColumn columnRebSpeed;
-        private DataGridViewTextBoxColumn columnRebForce;
-        private DataGridViewTextBoxColumn columnTemp;
         private TabPage pageTime;
         private TableLayoutPanel tableLayoutTime;
         private PlotControl plotTimeF;

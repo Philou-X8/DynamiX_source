@@ -29,7 +29,7 @@
         private void InitializeComponent()
         {
             graphPanel1 = new DynamiX_HMI.Grapher.GraphPanel();
-            labelDebugMessage = new Label();
+            richTextBoxMessages = new RichTextBox();
             buttonConnection = new Button();
             leftGridLayout = new TableLayoutPanel();
             serialPanel = new DynamiX_HMI.Serial.SerialPanel();
@@ -97,29 +97,32 @@
             // graphPanel1
             // 
             graphPanel1.Dock = DockStyle.Fill;
-            graphPanel1.Location = new Point(4, 45);
+            graphPanel1.Location = new Point(4, 85);
             graphPanel1.Name = "graphPanel1";
-            graphPanel1.Size = new Size(511, 507);
+            graphPanel1.Size = new Size(526, 487);
             graphPanel1.TabIndex = 1;
             // 
-            // labelDebugMessage
+            // richTextBoxMessages
             // 
-            labelDebugMessage.AutoSize = true;
-            labelDebugMessage.Location = new Point(4, 4);
-            labelDebugMessage.Margin = new Padding(3);
-            labelDebugMessage.Name = "labelDebugMessage";
-            labelDebugMessage.Padding = new Padding(3);
-            labelDebugMessage.Size = new Size(82, 21);
-            labelDebugMessage.TabIndex = 3;
-            labelDebugMessage.Text = "message box";
-            labelDebugMessage.TextAlign = ContentAlignment.MiddleLeft;
+            richTextBoxMessages.BackColor = Color.White;
+            richTextBoxMessages.BorderStyle = BorderStyle.None;
+            richTextBoxMessages.DetectUrls = false;
+            richTextBoxMessages.Dock = DockStyle.Fill;
+            richTextBoxMessages.Location = new Point(4, 4);
+            richTextBoxMessages.Name = "richTextBoxMessages";
+            richTextBoxMessages.ReadOnly = true;
+            richTextBoxMessages.ScrollBars = RichTextBoxScrollBars.Vertical;
+            richTextBoxMessages.Size = new Size(526, 74);
+            richTextBoxMessages.TabIndex = 3;
+            richTextBoxMessages.TabStop = false;
+            richTextBoxMessages.Text = "";
             // 
             // buttonConnection
             // 
             buttonConnection.Dock = DockStyle.Fill;
             buttonConnection.Location = new Point(4, 4);
             buttonConnection.Name = "buttonConnection";
-            buttonConnection.Size = new Size(265, 34);
+            buttonConnection.Size = new Size(242, 34);
             buttonConnection.TabIndex = 2;
             buttonConnection.Text = "Not Connected";
             buttonConnection.UseVisualStyleBackColor = true;
@@ -143,7 +146,7 @@
             leftGridLayout.RowStyles.Add(new RowStyle());
             leftGridLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             leftGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
-            leftGridLayout.Size = new Size(273, 657);
+            leftGridLayout.Size = new Size(250, 657);
             leftGridLayout.TabIndex = 1;
             // 
             // serialPanel
@@ -155,7 +158,7 @@
             serialPanel.Margin = new Padding(0);
             serialPanel.MinimumSize = new Size(200, 220);
             serialPanel.Name = "serialPanel";
-            serialPanel.Size = new Size(271, 220);
+            serialPanel.Size = new Size(248, 220);
             serialPanel.TabIndex = 2;
             // 
             // groupBoxMachine
@@ -165,7 +168,7 @@
             groupBoxMachine.Location = new Point(4, 509);
             groupBoxMachine.MinimumSize = new Size(0, 100);
             groupBoxMachine.Name = "groupBoxMachine";
-            groupBoxMachine.Size = new Size(265, 144);
+            groupBoxMachine.Size = new Size(242, 144);
             groupBoxMachine.TabIndex = 3;
             groupBoxMachine.TabStop = false;
             groupBoxMachine.Text = "Machine Control";
@@ -184,7 +187,7 @@
             tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
             tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
             tableLayoutPanel1.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
-            tableLayoutPanel1.Size = new Size(259, 122);
+            tableLayoutPanel1.Size = new Size(236, 122);
             tableLayoutPanel1.TabIndex = 0;
             // 
             // buttonMachineStop
@@ -192,7 +195,7 @@
             buttonMachineStop.Dock = DockStyle.Fill;
             buttonMachineStop.Location = new Point(3, 83);
             buttonMachineStop.Name = "buttonMachineStop";
-            buttonMachineStop.Size = new Size(253, 36);
+            buttonMachineStop.Size = new Size(230, 36);
             buttonMachineStop.TabIndex = 2;
             buttonMachineStop.Text = "Abort";
             buttonMachineStop.UseVisualStyleBackColor = true;
@@ -203,7 +206,7 @@
             buttonMachineStart.Dock = DockStyle.Fill;
             buttonMachineStart.Location = new Point(3, 43);
             buttonMachineStart.Name = "buttonMachineStart";
-            buttonMachineStart.Size = new Size(253, 34);
+            buttonMachineStart.Size = new Size(230, 34);
             buttonMachineStart.TabIndex = 0;
             buttonMachineStart.Text = "Start Run";
             buttonMachineStart.UseVisualStyleBackColor = true;
@@ -214,7 +217,7 @@
             buttonTar.Dock = DockStyle.Fill;
             buttonTar.Location = new Point(3, 3);
             buttonTar.Name = "buttonTar";
-            buttonTar.Size = new Size(253, 34);
+            buttonTar.Size = new Size(230, 34);
             buttonTar.TabIndex = 3;
             buttonTar.Text = "TAR and bottom out";
             buttonTar.UseVisualStyleBackColor = true;
@@ -226,7 +229,7 @@
             groupBoxSequence.Dock = DockStyle.Fill;
             groupBoxSequence.Location = new Point(4, 266);
             groupBoxSequence.Name = "groupBoxSequence";
-            groupBoxSequence.Size = new Size(265, 236);
+            groupBoxSequence.Size = new Size(242, 236);
             groupBoxSequence.TabIndex = 0;
             groupBoxSequence.TabStop = false;
             groupBoxSequence.Text = "Test Sequence";
@@ -236,7 +239,7 @@
             sequencePanel1.Dock = DockStyle.Fill;
             sequencePanel1.Location = new Point(3, 19);
             sequencePanel1.Name = "sequencePanel1";
-            sequencePanel1.Size = new Size(259, 214);
+            sequencePanel1.Size = new Size(236, 214);
             sequencePanel1.TabIndex = 0;
             // 
             // mainSplitContainerLeft
@@ -254,7 +257,7 @@
             // 
             mainSplitContainerLeft.Panel2.Controls.Add(mainSplitContainerRight);
             mainSplitContainerLeft.Size = new Size(1053, 657);
-            mainSplitContainerLeft.SplitterDistance = 273;
+            mainSplitContainerLeft.SplitterDistance = 250;
             mainSplitContainerLeft.TabIndex = 1;
             // 
             // mainSplitContainerRight
@@ -271,8 +274,8 @@
             // 
             mainSplitContainerRight.Panel2.Controls.Add(rightGridLayout);
             mainSplitContainerRight.Panel2MinSize = 150;
-            mainSplitContainerRight.Size = new Size(776, 657);
-            mainSplitContainerRight.SplitterDistance = 519;
+            mainSplitContainerRight.Size = new Size(799, 657);
+            mainSplitContainerRight.SplitterDistance = 534;
             mainSplitContainerRight.TabIndex = 0;
             mainSplitContainerRight.TabStop = false;
             // 
@@ -282,26 +285,25 @@
             centerGridLayout.ColumnCount = 1;
             centerGridLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             centerGridLayout.Controls.Add(graphPanel1, 0, 1);
-            centerGridLayout.Controls.Add(labelDebugMessage, 0, 0);
+            centerGridLayout.Controls.Add(richTextBoxMessages, 0, 0);
             centerGridLayout.Controls.Add(groupBoxLiveData, 0, 2);
             centerGridLayout.Dock = DockStyle.Fill;
             centerGridLayout.Location = new Point(0, 0);
             centerGridLayout.Name = "centerGridLayout";
             centerGridLayout.RowCount = 3;
-            centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
+            centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80F));
             centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100F));
-            centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
-            centerGridLayout.Size = new Size(519, 657);
+            centerGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80F));
+            centerGridLayout.Size = new Size(534, 657);
             centerGridLayout.TabIndex = 0;
             // 
             // groupBoxLiveData
             // 
             groupBoxLiveData.Controls.Add(tableLayoutPanel3);
             groupBoxLiveData.Dock = DockStyle.Fill;
-            groupBoxLiveData.Location = new Point(4, 559);
+            groupBoxLiveData.Location = new Point(4, 579);
             groupBoxLiveData.Name = "groupBoxLiveData";
-            groupBoxLiveData.Size = new Size(511, 94);
+            groupBoxLiveData.Size = new Size(526, 74);
             groupBoxLiveData.TabIndex = 4;
             groupBoxLiveData.TabStop = false;
             groupBoxLiveData.Text = "Live data";
@@ -339,28 +341,28 @@
             tableLayoutPanel3.RowCount = 2;
             tableLayoutPanel3.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
             tableLayoutPanel3.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            tableLayoutPanel3.Size = new Size(505, 72);
+            tableLayoutPanel3.Size = new Size(520, 52);
             tableLayoutPanel3.TabIndex = 7;
             // 
             // labelForceMaxVal
             // 
             labelForceMaxVal.AutoSize = true;
-            labelForceMaxVal.Location = new Point(444, 39);
+            labelForceMaxVal.Location = new Point(452, 29);
             labelForceMaxVal.Margin = new Padding(3);
             labelForceMaxVal.Name = "labelForceMaxVal";
             labelForceMaxVal.Padding = new Padding(3);
-            labelForceMaxVal.Size = new Size(23, 21);
+            labelForceMaxVal.Size = new Size(23, 20);
             labelForceMaxVal.TabIndex = 19;
             labelForceMaxVal.Text = "??";
             // 
             // labelForceMinVal
             // 
             labelForceMinVal.AutoSize = true;
-            labelForceMinVal.Location = new Point(318, 39);
+            labelForceMinVal.Location = new Point(323, 29);
             labelForceMinVal.Margin = new Padding(3);
             labelForceMinVal.Name = "labelForceMinVal";
             labelForceMinVal.Padding = new Padding(3);
-            labelForceMinVal.Size = new Size(23, 21);
+            labelForceMinVal.Size = new Size(23, 20);
             labelForceMinVal.TabIndex = 18;
             labelForceMinVal.Text = "??";
             // 
@@ -368,11 +370,11 @@
             // 
             labelForceMin.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             labelForceMin.AutoSize = true;
-            labelForceMin.Location = new Point(269, 39);
+            labelForceMin.Location = new Point(274, 29);
             labelForceMin.Margin = new Padding(3);
             labelForceMin.Name = "labelForceMin";
             labelForceMin.Padding = new Padding(3);
-            labelForceMin.Size = new Size(43, 21);
+            labelForceMin.Size = new Size(43, 20);
             labelForceMin.TabIndex = 16;
             labelForceMin.Text = "F Bot:";
             labelForceMin.TextAlign = ContentAlignment.TopRight;
@@ -381,11 +383,11 @@
             // 
             labelPosMax.AutoSize = true;
             labelPosMax.Dock = DockStyle.Fill;
-            labelPosMax.Location = new Point(129, 39);
+            labelPosMax.Location = new Point(131, 29);
             labelPosMax.Margin = new Padding(3);
             labelPosMax.Name = "labelPosMax";
             labelPosMax.Padding = new Padding(3);
-            labelPosMax.Size = new Size(57, 30);
+            labelPosMax.Size = new Size(58, 20);
             labelPosMax.TabIndex = 13;
             labelPosMax.Text = "Top:";
             labelPosMax.TextAlign = ContentAlignment.TopRight;
@@ -394,11 +396,11 @@
             // 
             labelPosMin.AutoSize = true;
             labelPosMin.Dock = DockStyle.Fill;
-            labelPosMin.Location = new Point(3, 39);
+            labelPosMin.Location = new Point(3, 29);
             labelPosMin.Margin = new Padding(3);
             labelPosMin.Name = "labelPosMin";
             labelPosMin.Padding = new Padding(3);
-            labelPosMin.Size = new Size(57, 30);
+            labelPosMin.Size = new Size(58, 20);
             labelPosMin.TabIndex = 12;
             labelPosMin.Text = "Bottom:";
             labelPosMin.TextAlign = ContentAlignment.TopRight;
@@ -407,11 +409,11 @@
             // 
             labelForce.AutoSize = true;
             labelForce.Dock = DockStyle.Fill;
-            labelForce.Location = new Point(255, 3);
+            labelForce.Location = new Point(259, 3);
             labelForce.Margin = new Padding(3);
             labelForce.Name = "labelForce";
             labelForce.Padding = new Padding(3);
-            labelForce.Size = new Size(57, 30);
+            labelForce.Size = new Size(58, 20);
             labelForce.TabIndex = 11;
             labelForce.Text = "Force:";
             labelForce.TextAlign = ContentAlignment.TopRight;
@@ -420,11 +422,11 @@
             // 
             labelStrokeVal.AutoSize = true;
             labelStrokeVal.Dock = DockStyle.Fill;
-            labelStrokeVal.Location = new Point(192, 3);
+            labelStrokeVal.Location = new Point(195, 3);
             labelStrokeVal.Margin = new Padding(3);
             labelStrokeVal.Name = "labelStrokeVal";
             labelStrokeVal.Padding = new Padding(3);
-            labelStrokeVal.Size = new Size(57, 30);
+            labelStrokeVal.Size = new Size(58, 20);
             labelStrokeVal.TabIndex = 10;
             labelStrokeVal.Text = "??";
             // 
@@ -432,11 +434,11 @@
             // 
             labelStroke.AutoSize = true;
             labelStroke.Dock = DockStyle.Fill;
-            labelStroke.Location = new Point(129, 3);
+            labelStroke.Location = new Point(131, 3);
             labelStroke.Margin = new Padding(3);
             labelStroke.Name = "labelStroke";
             labelStroke.Padding = new Padding(3);
-            labelStroke.Size = new Size(57, 30);
+            labelStroke.Size = new Size(58, 20);
             labelStroke.TabIndex = 9;
             labelStroke.Text = "Stroke:";
             labelStroke.TextAlign = ContentAlignment.TopRight;
@@ -445,11 +447,11 @@
             // 
             labelPosVal.AutoSize = true;
             labelPosVal.Dock = DockStyle.Fill;
-            labelPosVal.Location = new Point(66, 3);
+            labelPosVal.Location = new Point(67, 3);
             labelPosVal.Margin = new Padding(3);
             labelPosVal.Name = "labelPosVal";
             labelPosVal.Padding = new Padding(3);
-            labelPosVal.Size = new Size(57, 30);
+            labelPosVal.Size = new Size(58, 20);
             labelPosVal.TabIndex = 8;
             labelPosVal.Text = "??";
             // 
@@ -457,11 +459,11 @@
             // 
             labelPosMinVal.AutoSize = true;
             labelPosMinVal.Dock = DockStyle.Fill;
-            labelPosMinVal.Location = new Point(66, 39);
+            labelPosMinVal.Location = new Point(67, 29);
             labelPosMinVal.Margin = new Padding(3);
             labelPosMinVal.Name = "labelPosMinVal";
             labelPosMinVal.Padding = new Padding(3);
-            labelPosMinVal.Size = new Size(57, 30);
+            labelPosMinVal.Size = new Size(58, 20);
             labelPosMinVal.TabIndex = 3;
             labelPosMinVal.Text = "??";
             // 
@@ -469,11 +471,11 @@
             // 
             labelForceVal.AutoSize = true;
             labelForceVal.Dock = DockStyle.Fill;
-            labelForceVal.Location = new Point(318, 3);
+            labelForceVal.Location = new Point(323, 3);
             labelForceVal.Margin = new Padding(3);
             labelForceVal.Name = "labelForceVal";
             labelForceVal.Padding = new Padding(3);
-            labelForceVal.Size = new Size(57, 30);
+            labelForceVal.Size = new Size(58, 20);
             labelForceVal.TabIndex = 6;
             labelForceVal.Text = "??";
             // 
@@ -481,11 +483,11 @@
             // 
             labelPosMaxVal.AutoSize = true;
             labelPosMaxVal.Dock = DockStyle.Fill;
-            labelPosMaxVal.Location = new Point(192, 39);
+            labelPosMaxVal.Location = new Point(195, 29);
             labelPosMaxVal.Margin = new Padding(3);
             labelPosMaxVal.Name = "labelPosMaxVal";
             labelPosMaxVal.Padding = new Padding(3);
-            labelPosMaxVal.Size = new Size(57, 30);
+            labelPosMaxVal.Size = new Size(58, 20);
             labelPosMaxVal.TabIndex = 4;
             labelPosMaxVal.Text = "??";
             // 
@@ -497,7 +499,7 @@
             labelPosition.Margin = new Padding(3);
             labelPosition.Name = "labelPosition";
             labelPosition.Padding = new Padding(3);
-            labelPosition.Size = new Size(57, 30);
+            labelPosition.Size = new Size(58, 20);
             labelPosition.TabIndex = 7;
             labelPosition.Text = "Position:";
             labelPosition.TextAlign = ContentAlignment.TopRight;
@@ -505,11 +507,11 @@
             // labelTempVal
             // 
             labelTempVal.AutoSize = true;
-            labelTempVal.Location = new Point(444, 3);
+            labelTempVal.Location = new Point(452, 3);
             labelTempVal.Margin = new Padding(3);
             labelTempVal.Name = "labelTempVal";
             labelTempVal.Padding = new Padding(3);
-            labelTempVal.Size = new Size(23, 21);
+            labelTempVal.Size = new Size(23, 20);
             labelTempVal.TabIndex = 15;
             labelTempVal.Text = "??";
             // 
@@ -517,11 +519,11 @@
             // 
             labelTemp.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             labelTemp.AutoSize = true;
-            labelTemp.Location = new Point(393, 3);
+            labelTemp.Location = new Point(401, 3);
             labelTemp.Margin = new Padding(3);
             labelTemp.Name = "labelTemp";
             labelTemp.Padding = new Padding(3);
-            labelTemp.Size = new Size(45, 21);
+            labelTemp.Size = new Size(45, 20);
             labelTemp.TabIndex = 14;
             labelTemp.Text = "Temp:";
             labelTemp.TextAlign = ContentAlignment.TopRight;
@@ -530,11 +532,11 @@
             // 
             labelForceMax.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             labelForceMax.AutoSize = true;
-            labelForceMax.Location = new Point(394, 39);
+            labelForceMax.Location = new Point(402, 29);
             labelForceMax.Margin = new Padding(3);
             labelForceMax.Name = "labelForceMax";
             labelForceMax.Padding = new Padding(3);
-            labelForceMax.Size = new Size(44, 21);
+            labelForceMax.Size = new Size(44, 20);
             labelForceMax.TabIndex = 17;
             labelForceMax.Text = "F Top:";
             labelForceMax.TextAlign = ContentAlignment.TopRight;
@@ -556,7 +558,7 @@
             rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 180F));
             rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100F));
             rightGridLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            rightGridLayout.Size = new Size(253, 657);
+            rightGridLayout.Size = new Size(261, 657);
             rightGridLayout.TabIndex = 0;
             // 
             // tableLayoutPanel4
@@ -573,7 +575,7 @@
             tableLayoutPanel4.Name = "tableLayoutPanel4";
             tableLayoutPanel4.RowCount = 1;
             tableLayoutPanel4.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            tableLayoutPanel4.Size = new Size(251, 40);
+            tableLayoutPanel4.Size = new Size(259, 40);
             tableLayoutPanel4.TabIndex = 4;
             // 
             // labelStatus
@@ -589,9 +591,9 @@
             // buttonOptions
             // 
             buttonOptions.Dock = DockStyle.Fill;
-            buttonOptions.Location = new Point(153, 3);
+            buttonOptions.Location = new Point(157, 3);
             buttonOptions.Name = "buttonOptions";
-            buttonOptions.Size = new Size(95, 34);
+            buttonOptions.Size = new Size(99, 34);
             buttonOptions.TabIndex = 2;
             buttonOptions.Text = "Options";
             buttonOptions.UseVisualStyleBackColor = true;
@@ -602,7 +604,7 @@
             optionPanel1.Dock = DockStyle.Fill;
             optionPanel1.Location = new Point(4, 45);
             optionPanel1.Name = "optionPanel1";
-            optionPanel1.Size = new Size(245, 174);
+            optionPanel1.Size = new Size(253, 174);
             optionPanel1.TabIndex = 5;
             // 
             // runPanel1
@@ -610,7 +612,7 @@
             runPanel1.Dock = DockStyle.Fill;
             runPanel1.Location = new Point(4, 327);
             runPanel1.Name = "runPanel1";
-            runPanel1.Size = new Size(245, 326);
+            runPanel1.Size = new Size(253, 326);
             runPanel1.TabIndex = 2;
             // 
             // groupBoxProject
@@ -619,7 +621,7 @@
             groupBoxProject.Dock = DockStyle.Fill;
             groupBoxProject.Location = new Point(4, 226);
             groupBoxProject.Name = "groupBoxProject";
-            groupBoxProject.Size = new Size(245, 94);
+            groupBoxProject.Size = new Size(253, 94);
             groupBoxProject.TabIndex = 0;
             groupBoxProject.TabStop = false;
             groupBoxProject.Text = "Active Project";
@@ -640,7 +642,7 @@
             tableLayoutPanelProject.RowCount = 2;
             tableLayoutPanelProject.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
             tableLayoutPanelProject.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            tableLayoutPanelProject.Size = new Size(239, 72);
+            tableLayoutPanelProject.Size = new Size(247, 72);
             tableLayoutPanelProject.TabIndex = 5;
             // 
             // buttonProjectNew
@@ -648,7 +650,7 @@
             buttonProjectNew.Dock = DockStyle.Fill;
             buttonProjectNew.Location = new Point(3, 39);
             buttonProjectNew.Name = "buttonProjectNew";
-            buttonProjectNew.Size = new Size(113, 30);
+            buttonProjectNew.Size = new Size(100, 30);
             buttonProjectNew.TabIndex = 3;
             buttonProjectNew.Text = "New Project";
             buttonProjectNew.UseVisualStyleBackColor = true;
@@ -656,21 +658,21 @@
             // 
             // textBoxProject
             // 
-            tableLayoutPanelProject.SetColumnSpan(textBoxProject, 2);
             textBoxProject.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            textBoxProject.ReadOnly = true;
-            textBoxProject.Location = new Point(3, 3);
+            tableLayoutPanelProject.SetColumnSpan(textBoxProject, 2);
+            textBoxProject.Location = new Point(3, 6);
             textBoxProject.Name = "textBoxProject";
-            textBoxProject.Size = new Size(233, 23);
+            textBoxProject.ReadOnly = true;
+            textBoxProject.Size = new Size(206, 23);
             textBoxProject.TabIndex = 1;
             // 
             // buttonProjectLoad
             // 
             tableLayoutPanelProject.SetColumnSpan(buttonProjectLoad, 2);
             buttonProjectLoad.Dock = DockStyle.Fill;
-            buttonProjectLoad.Location = new Point(122, 39);
+            buttonProjectLoad.Location = new Point(109, 39);
             buttonProjectLoad.Name = "buttonProjectLoad";
-            buttonProjectLoad.Size = new Size(114, 30);
+            buttonProjectLoad.Size = new Size(135, 30);
             buttonProjectLoad.TabIndex = 4;
             buttonProjectLoad.Text = "Load Project";
             buttonProjectLoad.UseVisualStyleBackColor = true;
@@ -679,9 +681,10 @@
             // buttonProjectBrowse
             // 
             buttonProjectBrowse.Dock = DockStyle.Fill;
+            buttonProjectBrowse.Location = new Point(212, 3);
             buttonProjectBrowse.Margin = new Padding(0, 3, 3, 3);
             buttonProjectBrowse.Name = "buttonProjectBrowse";
-            buttonProjectBrowse.Size = new Size(31, 27);
+            buttonProjectBrowse.Size = new Size(32, 30);
             buttonProjectBrowse.TabIndex = 2;
             buttonProjectBrowse.Text = "...";
             buttonProjectBrowse.UseVisualStyleBackColor = true;
@@ -709,7 +712,6 @@
             ((System.ComponentModel.ISupportInitialize)mainSplitContainerRight).EndInit();
             mainSplitContainerRight.ResumeLayout(false);
             centerGridLayout.ResumeLayout(false);
-            centerGridLayout.PerformLayout();
             groupBoxLiveData.ResumeLayout(false);
             tableLayoutPanel3.ResumeLayout(false);
             tableLayoutPanel3.PerformLayout();
@@ -726,7 +728,7 @@
         private TableLayoutPanel leftGridLayout;
         private Button buttonConnection;
         private GroupBox groupBoxSequence;
-        private Label labelDebugMessage;
+        private RichTextBox richTextBoxMessages;
         private Serial.SerialPanel serialPanel;
         private GroupBox groupBoxMachine;
         private TableLayoutPanel tableLayoutPanel1;

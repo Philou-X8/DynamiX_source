@@ -66,7 +66,7 @@ namespace DynamiX_HMI
 
             optionPanel1.SetSerialHandle(serialController.SendGuiCommand); // failsafe and reboot go straight to the ESP
 
-            logger = new Logger(buttonConnection, labelDebugMessage, labelStatus);
+            logger = new Logger(buttonConnection, richTextBoxMessages, labelStatus);
 
             graphController = new GraphController(runPanel1, graphPanel1, logger.SetMessage);
 
@@ -181,7 +181,7 @@ namespace DynamiX_HMI
                 default:
                     if (command.payload.Length > 0)
                     {
-                        logger.SetMessage(command.payload);
+                        logger.SetMessage(command);
                     }
                     break;
             }

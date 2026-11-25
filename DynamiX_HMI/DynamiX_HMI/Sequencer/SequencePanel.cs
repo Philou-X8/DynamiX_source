@@ -9,7 +9,7 @@ namespace DynamiX_HMI.Sequencer
 {
     /// <summary>
     /// The sequence builder: a table with one row per step,
-    ///   | down | up | speed | speed unit | duration | duration unit | remove |
+    ///   | speed | speed unit | duration | duration unit | remove |
     /// Speed units: mm/s (default), m/s, drive Hz, yoke RPM. Duration units: cycles (default), seconds.
     /// Type in the empty row at the bottom (or press Add) to add a step: it takes the units and the duration of the
     /// row above, 5 cycles at first. A row that can't be used is shaded and its tooltip says why.
@@ -177,23 +177,9 @@ namespace DynamiX_HMI.Sequencer
         private void AddRow()
         {
             var (speedUnit, duration, durationUnit) = NewRowValues();
-            int index = gridSequence.Rows.Add("", "", "", speedUnit, duration, durationUnit, "");
+            int index = gridSequence.Rows.Add("", speedUnit, duration, durationUnit, "");
             gridSequence.CurrentCell = gridSequence[columnSpeed.Index, index];
             gridSequence.BeginEdit(true);
-        }
-
-        private void MoveRow(int index, int delta)
-        {
-            int target = index + delta;
-            int last = gridSequence.Rows.Count - (gridSequence.AllowUserToAddRows ? 2 : 1); // not past the empty row
-            if (target < 0 || target > last)
-            {
-                return;
-            }
-            DataGridViewRow row = gridSequence.Rows[index];
-            gridSequence.Rows.RemoveAt(index);
-            gridSequence.Rows.Insert(target, row);
-            gridSequence.CurrentCell = gridSequence[columnSpeed.Index, target];
         }
 
         /// <summary> Shades the rows that can't be used and puts what each one means in its tooltip. </summary>
@@ -293,7 +279,7 @@ namespace DynamiX_HMI.Sequencer
             gridSequence.Rows.Clear();
             foreach (string[] r in rows)
             {
-                gridSequence.Rows.Add("", "", r[0], r[1], r[2], r[3], "");
+                gridSequence.Rows.Add(r[0], r[1], r[2], r[3], "");
             }
             RefreshRows();
         }
@@ -408,15 +394,7 @@ namespace DynamiX_HMI.Sequencer
             {
                 return;
             }
-            if (e.ColumnIndex == columnDown.Index)
-            {
-                MoveRow(e.RowIndex, 1);
-            }
-            else if (e.ColumnIndex == columnUp.Index)
-            {
-                MoveRow(e.RowIndex, -1);
-            }
-            else if (e.ColumnIndex == columnRemove.Index)
+            if (e.ColumnIndex == columnRemove.Index)
             {
                 gridSequence.Rows.RemoveAt(e.RowIndex);
             }

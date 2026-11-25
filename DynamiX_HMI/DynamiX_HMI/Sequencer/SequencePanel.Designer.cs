@@ -33,8 +33,6 @@ namespace DynamiX_HMI.Sequencer
             DataGridViewCellStyle dataGridViewCellStyle2 = new DataGridViewCellStyle();
             DataGridViewCellStyle dataGridViewCellStyle3 = new DataGridViewCellStyle();
             gridSequence = new DataGridView();
-            columnDown = new DataGridViewButtonColumn();
-            columnUp = new DataGridViewButtonColumn();
             columnSpeed = new DataGridViewTextBoxColumn();
             columnSpeedUnit = new DataGridViewComboBoxColumn();
             columnDuration = new DataGridViewTextBoxColumn();
@@ -64,7 +62,7 @@ namespace DynamiX_HMI.Sequencer
             dataGridViewCellStyle1.WrapMode = DataGridViewTriState.True;
             gridSequence.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle1;
             gridSequence.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
-            gridSequence.Columns.AddRange(new DataGridViewColumn[] { columnDown, columnUp, columnSpeed, columnSpeedUnit, columnDuration, columnDurationUnit, columnRemove });
+            gridSequence.Columns.AddRange(new DataGridViewColumn[] { columnSpeed, columnSpeedUnit, columnDuration, columnDurationUnit, columnRemove });
             tableLayoutPanel1.SetColumnSpan(gridSequence, 3);
             dataGridViewCellStyle2.Alignment = DataGridViewContentAlignment.MiddleLeft;
             dataGridViewCellStyle2.BackColor = SystemColors.Window;
@@ -100,30 +98,6 @@ namespace DynamiX_HMI.Sequencer
             gridSequence.DefaultValuesNeeded += gridSequence_DefaultValuesNeeded;
             gridSequence.RowsAdded += gridSequence_RowsChanged;
             gridSequence.RowsRemoved += gridSequence_RowsChanged;
-            // 
-            // columnDown
-            // 
-            columnDown.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-            columnDown.HeaderText = "";
-            columnDown.MinimumWidth = 24;
-            columnDown.Name = "columnDown";
-            columnDown.Resizable = DataGridViewTriState.False;
-            columnDown.Text = "↓";
-            columnDown.ToolTipText = "Move this step down";
-            columnDown.UseColumnTextForButtonValue = true;
-            columnDown.Width = 26;
-            // 
-            // columnUp
-            // 
-            columnUp.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-            columnUp.HeaderText = "";
-            columnUp.MinimumWidth = 24;
-            columnUp.Name = "columnUp";
-            columnUp.Resizable = DataGridViewTriState.False;
-            columnUp.Text = "↑";
-            columnUp.ToolTipText = "Move this step up";
-            columnUp.UseColumnTextForButtonValue = true;
-            columnUp.Width = 26;
             // 
             // columnSpeed
             // 
@@ -269,8 +243,6 @@ namespace DynamiX_HMI.Sequencer
 
         #endregion
         private DataGridView gridSequence;
-        private DataGridViewButtonColumn columnDown;
-        private DataGridViewButtonColumn columnUp;
         private DataGridViewTextBoxColumn columnSpeed;
         private DataGridViewComboBoxColumn columnSpeedUnit;
         private DataGridViewTextBoxColumn columnDuration;

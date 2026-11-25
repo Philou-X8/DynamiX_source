@@ -10,7 +10,7 @@ namespace DynamiX_HMI.Grapher
     ///   Live        force and position of the last 10 s, with noise figures
     ///   Force/Pos   force over position, every measured cycle of the shown speeds
     ///   Force/Speed force over speed (the average cycle of each shown speed)
-    ///   Peak        force at peak speed against peak speed, one line per run, and the table behind it
+    ///   Peak        force at peak speed against peak speed, one line per run
     ///   Time        the whole first shown run against time: force, position and speed
     ///   Debug       the last points as text
     /// Every plot zooms with the wheel or a box, pans with the right button, and shows the nearest point on hover.
@@ -111,7 +111,6 @@ namespace DynamiX_HMI.Grapher
             plotTimeF.Series.Clear();
             plotTimeX.Series.Clear();
             plotTimeV.Series.Clear();
-            table.Rows.Clear();
 
             plotFx.Title = set.RemoveStaticForce ? "Force vs position, every cycle (static force removed)" : "Force vs position, every cycle (as measured)";
             plotFx.XLabel = "Position above bottom (" + lu + ")";
@@ -176,10 +175,6 @@ namespace DynamiX_HMI.Grapher
                         }
                     }
 
-                    table.Rows.Add(run.Display, stepName, step.Info.DriveHz.ToString("0.0"), r.CycleCount,
-                        speed(r.CompPeakVel).ToString("0.#"), Units.Force(r.CompForceAtPeakVel, u).ToString("0.#"),
-                        Units.Length(Math.Abs(r.RebPeakVel), u).ToString("0.#"), Units.Force(r.RebForceAtPeakVel, u).ToString("0.#"),
-                        double.IsNaN(step.Info.TempStartC) ? "" : step.Info.TempStartC.ToString("0.0"));
                 }
                 AddPeakSeries(run, steps, runColor, u, abs);
             }
