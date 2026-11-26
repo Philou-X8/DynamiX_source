@@ -786,5 +786,19 @@ namespace DynamiX_HMI
             bool isChecked = ((CheckBox)sender).Checked;
             logger.ToggleVilisbity(LogLevel.Debug, isChecked);
         }
+
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetDesktopWindow();
+
+        /// <summary> Starts the Windows screensaver (WM_SYSCOMMAND, SC_SCREENSAVE). Does nothing if none is set. </summary>
+        private void buttonSleep_Click(object? sender, EventArgs e)
+        {
+            SendMessage(GetDesktopWindow(), 0x0112, (IntPtr)0xF140, IntPtr.Zero);
+        }
+
     }
 }

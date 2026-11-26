@@ -77,6 +77,7 @@
             textBoxProject = new TextBox();
             buttonProjectLoad = new Button();
             buttonProjectBrowse = new Button();
+            buttonSleep = new Button();
             leftGridLayout.SuspendLayout();
             groupBoxMachine.SuspendLayout();
             tableLayoutPanel1.SuspendLayout();
@@ -627,11 +628,12 @@
             // tableLayoutPanel4
             // 
             tableLayoutPanel4.ColumnCount = 3;
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 47.0588226F));
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 5.882353F));
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 47.0588226F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 10F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45F));
             tableLayoutPanel4.Controls.Add(labelStatus, 0, 0);
             tableLayoutPanel4.Controls.Add(buttonOptions, 2, 0);
+            tableLayoutPanel4.Controls.Add(buttonSleep, 1, 0);
             tableLayoutPanel4.Dock = DockStyle.Fill;
             tableLayoutPanel4.Location = new Point(1, 1);
             tableLayoutPanel4.Margin = new Padding(0);
@@ -654,9 +656,9 @@
             // buttonOptions
             // 
             buttonOptions.Dock = DockStyle.Fill;
-            buttonOptions.Location = new Point(139, 3);
+            buttonOptions.Location = new Point(144, 3);
             buttonOptions.Name = "buttonOptions";
-            buttonOptions.Size = new Size(117, 34);
+            buttonOptions.Size = new Size(112, 34);
             buttonOptions.TabIndex = 2;
             buttonOptions.Text = "Options";
             buttonOptions.UseVisualStyleBackColor = true;
@@ -753,6 +755,16 @@
             buttonProjectBrowse.UseVisualStyleBackColor = true;
             buttonProjectBrowse.Click += buttonProjectLoad_Click;
             // 
+            // buttonSleep
+            // 
+            buttonSleep.Dock = DockStyle.Fill;
+            buttonSleep.Location = new Point(119, 3);
+            buttonSleep.Name = "buttonSleep";
+            buttonSleep.Size = new Size(19, 34);
+            buttonSleep.TabIndex = 3;
+            buttonSleep.UseVisualStyleBackColor = true;
+            buttonSleep.Click += buttonSleep_Click;
+            // 
             // MasterForm
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
@@ -839,5 +851,6 @@
         private CheckBox checkBoxError;
         private CheckBox checkBoxMessage;
         private CheckBox checkBoxDebug;
+        private Button buttonSleep;
     }
 }
