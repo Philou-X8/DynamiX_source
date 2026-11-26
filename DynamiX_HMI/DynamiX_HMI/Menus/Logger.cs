@@ -13,7 +13,9 @@ namespace DynamiX_HMI.Menus
     /// </summary>
     internal class Logger
     {
-        private const int MaxMessages = 10;
+        public Dictionary<LogLevel, bool> visibilityMap;
+        private const int MaxDisplay = 10;
+        private const int MaxMessages = 50;
 
         private readonly Button connectionButton;
         private readonly RichTextBox feed;
@@ -25,6 +27,11 @@ namespace DynamiX_HMI.Menus
             connectionButton = btn;
             feed = messageFeed;
             stateLabel = sta;
+
+            visibilityMap = new Dictionary<LogLevel, bool>();
+            visibilityMap[LogLevel.Normal] = true;
+            visibilityMap[LogLevel.Error] = true;
+            visibilityMap[LogLevel.Debug] = false;
         }
 
         public void SetButton(string txt)
@@ -62,6 +69,18 @@ namespace DynamiX_HMI.Menus
             stateLabel.Text = txt;
         }
 
+        public void ToggleVilisbity(LogLevel level, bool visibility)
+        {
+            visibilityMap[level] = visibility;
+            Redraw();
+        }
+
+        public void ToggleVilisbity(LogLevel level)
+        {
+            visibilityMap[level] = !visibilityMap[level];
+            Redraw();
+        }
+
         private static bool LooksLikeError(string txt)
         {
             return txt.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase)
@@ -75,12 +94,19 @@ namespace DynamiX_HMI.Menus
         {
             feed.SuspendLayout();
             feed.Clear();
+            int i = 0;
             foreach ((string text, LogLevel level) in messages)
             {
+                if (visibilityMap[level] == false)
+                {
+                    continue; // dont show this message
+                }
                 feed.SelectionStart = feed.TextLength;
                 feed.SelectionLength = 0;
                 feed.SelectionColor = level == LogLevel.Error ? Color.Firebrick : level == LogLevel.Debug ? Color.Gray : Color.Black;
                 feed.AppendText(text + "\n");
+                i++;
+                if (i >= MaxDisplay) break; // showing enough messages
             }
             feed.SelectionStart = 0; // the newest message, at the top
             feed.ScrollToCaret();

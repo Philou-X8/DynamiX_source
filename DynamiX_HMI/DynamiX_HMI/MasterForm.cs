@@ -662,7 +662,7 @@ namespace DynamiX_HMI
             // (0-255), so the chars are the bytes. The caller checks the payload length.
             int u = ((payload[startByte] & 0xFF) << 16)
                   | ((payload[startByte + 1] & 0xFF) << 8)
-                  |  (payload[startByte + 2] & 0xFF);
+                  | (payload[startByte + 2] & 0xFF);
             return (u ^ 0x800000) - 0x800000; // sign-extend from bit 23
         }
 
@@ -769,5 +769,22 @@ namespace DynamiX_HMI
             }
         }
 
+        private void checkBoxError_CheckedChanged(object sender, EventArgs e)
+        {
+            bool isChecked = ((CheckBox)sender).Checked;
+            logger.ToggleVilisbity(LogLevel.Error, isChecked);
+        }
+
+        private void checkBoxMessage_CheckedChanged(object sender, EventArgs e)
+        {
+            bool isChecked = ((CheckBox)sender).Checked;
+            logger.ToggleVilisbity(LogLevel.Normal, isChecked);
+        }
+
+        private void checkBoxDebug_CheckedChanged(object sender, EventArgs e)
+        {
+            bool isChecked = ((CheckBox)sender).Checked;
+            logger.ToggleVilisbity(LogLevel.Debug, isChecked);
+        }
     }
 }

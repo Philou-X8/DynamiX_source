@@ -61,6 +61,10 @@
             labelTempVal = new Label();
             labelTemp = new Label();
             labelForceMax = new Label();
+            tableLayoutPanel2 = new TableLayoutPanel();
+            checkBoxError = new CheckBox();
+            checkBoxMessage = new CheckBox();
+            checkBoxDebug = new CheckBox();
             rightGridLayout = new TableLayoutPanel();
             tableLayoutPanel4 = new TableLayoutPanel();
             labelStatus = new Label();
@@ -88,6 +92,7 @@
             centerGridLayout.SuspendLayout();
             groupBoxLiveData.SuspendLayout();
             tableLayoutPanel3.SuspendLayout();
+            tableLayoutPanel2.SuspendLayout();
             rightGridLayout.SuspendLayout();
             tableLayoutPanel4.SuspendLayout();
             groupBoxProject.SuspendLayout();
@@ -108,11 +113,12 @@
             richTextBoxMessages.BorderStyle = BorderStyle.None;
             richTextBoxMessages.DetectUrls = false;
             richTextBoxMessages.Dock = DockStyle.Fill;
-            richTextBoxMessages.Location = new Point(4, 4);
+            richTextBoxMessages.Location = new Point(3, 3);
             richTextBoxMessages.Name = "richTextBoxMessages";
             richTextBoxMessages.ReadOnly = true;
+            tableLayoutPanel2.SetRowSpan(richTextBoxMessages, 3);
             richTextBoxMessages.ScrollBars = RichTextBoxScrollBars.Vertical;
-            richTextBoxMessages.Size = new Size(526, 74);
+            richTextBoxMessages.Size = new Size(446, 74);
             richTextBoxMessages.TabIndex = 3;
             richTextBoxMessages.TabStop = false;
             richTextBoxMessages.Text = "";
@@ -232,7 +238,7 @@
             groupBoxSequence.Size = new Size(242, 236);
             groupBoxSequence.TabIndex = 0;
             groupBoxSequence.TabStop = false;
-            groupBoxSequence.Text = "Test Sequence";
+            groupBoxSequence.Text = "Sequence Builder";
             // 
             // sequencePanel1
             // 
@@ -285,8 +291,8 @@
             centerGridLayout.ColumnCount = 1;
             centerGridLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             centerGridLayout.Controls.Add(graphPanel1, 0, 1);
-            centerGridLayout.Controls.Add(richTextBoxMessages, 0, 0);
             centerGridLayout.Controls.Add(groupBoxLiveData, 0, 2);
+            centerGridLayout.Controls.Add(tableLayoutPanel2, 0, 0);
             centerGridLayout.Dock = DockStyle.Fill;
             centerGridLayout.Location = new Point(0, 0);
             centerGridLayout.Name = "centerGridLayout";
@@ -541,6 +547,63 @@
             labelForceMax.Text = "F Top:";
             labelForceMax.TextAlign = ContentAlignment.TopRight;
             // 
+            // tableLayoutPanel2
+            // 
+            tableLayoutPanel2.ColumnCount = 2;
+            tableLayoutPanel2.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            tableLayoutPanel2.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80F));
+            tableLayoutPanel2.Controls.Add(richTextBoxMessages, 0, 0);
+            tableLayoutPanel2.Controls.Add(checkBoxError, 1, 0);
+            tableLayoutPanel2.Controls.Add(checkBoxMessage, 1, 1);
+            tableLayoutPanel2.Controls.Add(checkBoxDebug, 1, 2);
+            tableLayoutPanel2.Dock = DockStyle.Fill;
+            tableLayoutPanel2.Location = new Point(1, 1);
+            tableLayoutPanel2.Margin = new Padding(0);
+            tableLayoutPanel2.Name = "tableLayoutPanel2";
+            tableLayoutPanel2.RowCount = 3;
+            tableLayoutPanel2.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
+            tableLayoutPanel2.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
+            tableLayoutPanel2.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3333321F));
+            tableLayoutPanel2.Size = new Size(532, 80);
+            tableLayoutPanel2.TabIndex = 5;
+            // 
+            // checkBoxError
+            // 
+            checkBoxError.AutoSize = true;
+            checkBoxError.Checked = true;
+            checkBoxError.CheckState = CheckState.Checked;
+            checkBoxError.Location = new Point(455, 3);
+            checkBoxError.Name = "checkBoxError";
+            checkBoxError.Size = new Size(51, 19);
+            checkBoxError.TabIndex = 4;
+            checkBoxError.Text = "Error";
+            checkBoxError.UseVisualStyleBackColor = true;
+            checkBoxError.CheckedChanged += checkBoxError_CheckedChanged;
+            // 
+            // checkBoxMessage
+            // 
+            checkBoxMessage.AutoSize = true;
+            checkBoxMessage.Checked = true;
+            checkBoxMessage.CheckState = CheckState.Checked;
+            checkBoxMessage.Location = new Point(455, 29);
+            checkBoxMessage.Name = "checkBoxMessage";
+            checkBoxMessage.Size = new Size(72, 19);
+            checkBoxMessage.TabIndex = 5;
+            checkBoxMessage.Text = "Message";
+            checkBoxMessage.UseVisualStyleBackColor = true;
+            checkBoxMessage.CheckedChanged += checkBoxMessage_CheckedChanged;
+            // 
+            // checkBoxDebug
+            // 
+            checkBoxDebug.AutoSize = true;
+            checkBoxDebug.Location = new Point(455, 55);
+            checkBoxDebug.Name = "checkBoxDebug";
+            checkBoxDebug.Size = new Size(61, 19);
+            checkBoxDebug.TabIndex = 6;
+            checkBoxDebug.Text = "Debug";
+            checkBoxDebug.UseVisualStyleBackColor = true;
+            checkBoxDebug.CheckedChanged += checkBoxDebug_CheckedChanged;
+            // 
             // rightGridLayout
             // 
             rightGridLayout.CellBorderStyle = TableLayoutPanelCellBorderStyle.Single;
@@ -564,9 +627,9 @@
             // tableLayoutPanel4
             // 
             tableLayoutPanel4.ColumnCount = 3;
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
-            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 47.0588226F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 5.882353F));
+            tableLayoutPanel4.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 47.0588226F));
             tableLayoutPanel4.Controls.Add(labelStatus, 0, 0);
             tableLayoutPanel4.Controls.Add(buttonOptions, 2, 0);
             tableLayoutPanel4.Dock = DockStyle.Fill;
@@ -591,9 +654,9 @@
             // buttonOptions
             // 
             buttonOptions.Dock = DockStyle.Fill;
-            buttonOptions.Location = new Point(157, 3);
+            buttonOptions.Location = new Point(139, 3);
             buttonOptions.Name = "buttonOptions";
-            buttonOptions.Size = new Size(99, 34);
+            buttonOptions.Size = new Size(117, 34);
             buttonOptions.TabIndex = 2;
             buttonOptions.Text = "Options";
             buttonOptions.UseVisualStyleBackColor = true;
@@ -715,6 +778,8 @@
             groupBoxLiveData.ResumeLayout(false);
             tableLayoutPanel3.ResumeLayout(false);
             tableLayoutPanel3.PerformLayout();
+            tableLayoutPanel2.ResumeLayout(false);
+            tableLayoutPanel2.PerformLayout();
             rightGridLayout.ResumeLayout(false);
             tableLayoutPanel4.ResumeLayout(false);
             tableLayoutPanel4.PerformLayout();
@@ -770,5 +835,9 @@
         private Button buttonProjectNew;
         private Button buttonProjectBrowse;
         private TableLayoutPanel tableLayoutPanelProject;
+        private TableLayoutPanel tableLayoutPanel2;
+        private CheckBox checkBoxError;
+        private CheckBox checkBoxMessage;
+        private CheckBox checkBoxDebug;
     }
 }
