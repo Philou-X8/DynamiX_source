@@ -16,7 +16,8 @@ namespace DynamiX_HMI.Serial
         // which wears out if written often).
         public const ushort FrequencyRegister = 0x800A;
 
-        public const double MaxHz = 60.0;           // P00.03 max output frequency; the drive refuses more
+        /// <summary> The highest frequency allowed: the "Max drive frequency" option (the drive's P00.03; it refuses more). </summary>
+        public static double MaxHz => Config.AppSettings.Current.MaxDriveHz;
 
         /// <summary>
         /// Frame that sets the drive's running frequency:

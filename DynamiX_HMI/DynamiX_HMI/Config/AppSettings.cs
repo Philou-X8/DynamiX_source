@@ -33,6 +33,9 @@ namespace DynamiX_HMI.Config
         [Category("2. Machine"), DisplayName("Top of stroke is compression"), Description("True: moving towards the top compresses the shock, so a positive speed is compression. False: the opposite.")]
         public bool TopIsCompression { get; set; } = true;
 
+        [Category("2. Machine"), DisplayName("Max drive frequency (Hz)"), Description("The highest frequency a sequence step may ask of the drive: a step that needs more is refused. Set it to the drive's own maximum output frequency (P00.03; 60 as shipped). The yoke runs at one tenth of it.")]
+        public double MaxDriveHz { get; set; } = 60.0;
+
         [Category("2. Machine"), DisplayName("Dead centre hysteresis (mm)"), Description("The position must reverse by this much for a dead centre to count when the cycles are cut out of a speed's data.")]
         public double CycleHysteresisMm { get; set; } = 2.0;
 
@@ -155,6 +158,7 @@ namespace DynamiX_HMI.Config
             ScreenRefreshMs = Math.Clamp(ScreenRefreshMs, 50, 1000);
             GraphColourHueShift = Math.Clamp(GraphColourHueShift, 0, 255);
             CycleHysteresisMm = Math.Max(0.01, Fix(CycleHysteresisMm, 2.0));
+            MaxDriveHz = Math.Clamp(Fix(MaxDriveHz, 60.0), 1.0, 600.0); // the drive's register holds up to 655 Hz
             FilterCutoffHz = Math.Max(0, Fix(FilterCutoffHz, 150));
             VelocityWindowMs = Math.Max(1, Fix(VelocityWindowMs, 8));
             PositionDelayMs = Math.Clamp(Fix(PositionDelayMs, 0), -50, 50);
